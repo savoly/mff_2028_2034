@@ -1,0 +1,78 @@
+[tool.poetry]
+name = "amo-playground"
+version = "0.1.0"
+description = ""
+authors = ["János Gábor Sávoly", "Gergő Vörös", "Barna Berekméri"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.13,<3.14"
+scikit-learn = "*"
+cryptography = "46.0.3"
+dash = "*"
+dash-bootstrap-components = "*"
+seaborn = "*"
+mapclassify = "*"
+numpy = "*"
+pandas = { version = "^2.3", extras = ["performance"] }
+office365-rest-python-client = "==2.6.2"
+scipy = "*"
+lxml = "*"
+xlsxwriter = "*"
+rich = "*"
+sqlalchemy = "*"
+vprof = "*"
+openpyxl = "*"
+python_calamine = "*"
+fastexcel = "*"
+pyside6 = "==6.10.2"
+pandera = { version = "*", extras = ["mypy"] }
+geopandas = "*"
+tqdm = "*"
+data-tools = { path = "../data_tools-dev", develop = false }
+statsmodels = "*"
+polars = {version = "^1.37.0", extras = ["all"]}
+lark = "*"
+lxml-stubs = "*"
+scipy-stubs = "*"
+types-seaborn = "*"
+types-geopandas = "*"
+types-shapely = "*"
+jenkspy = "*"
+unidecode = "*"
+streamlit = "^1.51.0"
+docling = "*"
+transformers = "*"
+huggingface-hub = { version = "*", extras = ["hf_xet"] }
+
+[tool.poetry.group.dev.dependencies]
+nbqa = { version = "*", extras = ["toolchain"] }
+ruff = "*"
+pytest = "*"
+pylint = "*"
+pyrefly = "*"
+mypy = "*"
+pynvim = "*"
+pytest-cov = "*"
+coverage = "*"
+ipykernel = "*"
+jupyter = "*"
+notebook = "*"
+sphinx = "*"
+sphinx-rtd-theme = "*"
+black = { version = "*", extras = ["jupyter"] }
+vulture = "*"
+perflint = "*"
+rst2html5 = "*"
+flake8 = "*"
+wily = "*"
+ansi2html = "*"
+graphviz = "*"
+gprof2dot = "*"
+pyright = "1.1.408"
+pre-commit = "*"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
