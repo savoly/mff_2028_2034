@@ -4,7 +4,8 @@ __pycache__/
 input/
 output/
 src/sources/
-input_pdf/
+input_pdf_01/
+input_pdf_02/
 
 mff_2028_2034/base_2024.csv
 mff_2028_2034/output/
