@@ -1,13 +1,13 @@
 [tool.poetry]
-name = "amo-playground"
+name = "mff_2028_2034"
 version = "0.1.0"
 description = ""
-authors = ["János Gábor Sávoly", "Gergő Vörös", "Barna Berekméri"]
+authors = ["János Gábor Sávoly"]
 readme = "README.md"
 package-mode = false
 
 [tool.poetry.dependencies]
-python = ">=3.13,<3.14"
+python = ">=3.14,<3.15"
 scikit-learn = "*"
 cryptography = "46.0.3"
 dash = "*"
@@ -42,9 +42,6 @@ types-shapely = "*"
 jenkspy = "*"
 unidecode = "*"
 streamlit = "^1.51.0"
-docling = "*"
-transformers = "*"
-huggingface-hub = { version = "*", extras = ["hf_xet"] }
 
 [tool.poetry.group.dev.dependencies]
 nbqa = { version = "*", extras = ["toolchain"] }

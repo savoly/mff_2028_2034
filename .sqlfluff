@@ -1,0 +1,11 @@
+[sqlfluff]
+dialect = postgres
+
+[sqlfluff:rules]
+exclude_rules = all
+
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = upper
+
+[sqlfluff:rules:capitalisation.functions]
+capitalisation_policy = upper
