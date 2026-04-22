@@ -1309,3 +1309,147 @@ def add_labels(ax, bars):
             va="bottom",
             fontsize=6,
         )
+
+
+def plot_support_summary_by_area_class_01(
+    data: pd.DataFrame,
+    coupled_payments: dict[str, dict[str, float]],
+    dabis_per_ha: float,
+    redist_per_ha: tuple[float, float],
+    bins: list[float],
+    labels: list[str],
+    allocation: float,
+    cis_ratio: float = 1,
+    flat_rate: float = 0,
+) -> pd.DataFrame:
+    data_with_subs = compute_capped_subsidies(data, dabis_per_ha, 90, redist_per_ha)
+
+    cis_columns = [
+        "subs_tk_cukorrepa",
+        "subs_tk_szemes_feherjenoveny",
+        "subs_tk_szalas_feherjenoveny",
+        "subs_tk_extenziv_gyumolcs",
+        "subs_tk_intenziv_gyumolcs",
+        "subs_tk_ipari_olajnoveny",
+        "subs_tk_ipari_zoldsegnoveny",
+        "subs_tk_zoldsegnoveny",
+        "subs_tk_rizs",
+        "subs_tk_hizottbika",
+        "subs_tk_anyatehen",
+        "subs_tk_tejhasznu_tehen",
+        "subs_tk_anyajuh",
+    ]
+
+    cis_new_columns = [
+        "subs_new_tk_cukorrepa",
+        "subs_new_tk_szemes_feherjenoveny",
+        "subs_new_tk_szalas_feherjenoveny",
+        "subs_new_tk_extenziv_gyumolcs",
+        "subs_new_tk_intenziv_gyumolcs",
+        "subs_new_tk_ipari_olajnoveny",
+        "subs_new_tk_ipari_zoldsegnoveny",
+        "subs_new_tk_zoldsegnoveny",
+        "subs_new_tk_rizs",
+        "subs_new_tk_hizottbika",
+        "subs_new_tk_anyatehen",
+        "subs_new_tk_tejhasznu_tehen",
+        "subs_new_tk_anyajuh",
+    ]
+
+    data_with_subs["subs_cur"] = (
+        data_with_subs["subs_biss"]
+        + data_with_subs["subs_redist"]
+        + data_with_subs["subs_yfs"]
+        + data_with_subs[cis_columns].fillna(0).sum(axis=1)
+        + data_with_subs["subs_aop"].fillna(0)
+        + data_with_subs["subs_vp_akg_2021"].fillna(0)
+    )
+
+    tk_feh = sum(
+        coupled_payments[key]["budget"]
+        for key in coupled_payments
+        if key in ["tk_szalas_feherjenoveny", "tk_szemes_feherjenoveny"]
+    )
+
+    tk_nem_feh = sum(
+        coupled_payments[key]["budget"]
+        for key in coupled_payments
+        if key not in ["tk_szalas_feherjenoveny", "tk_szemes_feherjenoveny"]
+    )
+
+    CIS_prot_ratio = (5 / 25 * 202_110_350) / tk_feh
+    CIS_non_prot_ratio = (20 / 25 * 202_110_350) / tk_nem_feh
+
+    for key in coupled_payments.keys():
+        if key in ["tk_szalas_feherjenoveny", "tk_szemes_feherjenoveny"]:
+            data_with_subs[f"subs_new_{key}"] = (
+                CIS_prot_ratio * data_with_subs[f"subs_{key}"]
+            )
+        else:
+            data_with_subs[f"subs_new_{key}"] = (
+                CIS_non_prot_ratio * data_with_subs[f"subs_{key}"]
+            )
+
+    data_with_subs["subs_capped"] += (
+        cis_ratio * data_with_subs[cis_new_columns].fillna(0).sum(axis=1)
+        + flat_rate * data_with_subs["area_aop"]
+    )
+
+    grouped_result = analyze_by_area_categories(
+        data_with_subs, bins=bins, labels=labels
+    )
+
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        3, 1, figsize=(10, 12), sharex=True, gridspec_kw={"height_ratios": [2, 1, 1]}
+    )
+
+    bars1 = ax1.bar(
+        grouped_result.index,
+        grouped_result["total_farmers"],
+        color="#0072B2",
+        alpha=0.85,
+    )
+    ax1.set_ylabel("Gazdálkodók száma (db)", fontsize=12)
+    ax1.yaxis.set_major_formatter(
+        FuncFormatter(lambda x, _: f"{int(x):,}".replace(",", " "))
+    )
+    add_bar_labels(ax1, bars1)
+
+    bars2 = ax2.bar(
+        grouped_result.index, grouped_result["total_area"], color="#56B4E9", alpha=0.85
+    )
+    ax2.set_ylabel("Összes terület (ha)", fontsize=12)
+    ax2.yaxis.set_major_formatter(
+        FuncFormatter(lambda x, _: f"{int(x):,}".replace(",", " "))
+    )
+    add_bar_labels(ax2, bars2)
+
+    bars3 = ax3.bar(
+        grouped_result.index,
+        grouped_result["avg_change"],
+        color=[
+            "#009E73" if v >= 0 else "#B22222" for v in grouped_result["avg_change"]
+        ],
+        alpha=0.85,
+    )
+    ax3.set_ylabel("Fajlagos támogatás változása (%)", fontsize=12)
+    ax3.axhline(0, color="gray", linestyle="--", linewidth=1)
+    add_bar_labels(ax3, bars3, percent=True)
+
+    ax3.set_xlabel("Méretkategória (ha)", fontsize=12)
+
+    # fig.suptitle(
+    #     f"Támogatások alakulása gazdálkodói méretkategóriák szerint\n{allocation / 1e6:.1f} millió EUR borítékkal DABIS borítékkal számolva".replace(
+    #         ".", ","
+    #     ),
+    #     fontsize=14,
+    #     fontweight="bold",
+    #     x=0.5,
+    #     y=0.95,
+    # )
+
+    fig.align_ylabels([ax1, ax2, ax3])
+    plt.subplots_adjust(left=0.12, hspace=0.2)
+    plt.savefig(f"output/abra_osszetett_{allocation / 1e6:.1f}.png", dpi=300)
+    plt.show()
+    return data_with_subs
