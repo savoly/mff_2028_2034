@@ -1296,3 +1296,16 @@ def plot_yfs_distribution(data: pd.DataFrame, threshold: float) -> None:
     plt.legend()
     plt.tight_layout()
     plt.show()
+
+
+def add_labels(ax, bars):
+    for bar in bars:
+        h = bar.get_height()
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            h + 0.010,  # offset above bar
+            f"{h * 100:.1f}%",  # format as percent
+            ha="center",
+            va="bottom",
+            fontsize=6,
+        )

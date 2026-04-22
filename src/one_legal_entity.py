@@ -42,4 +42,4 @@ order by t1.ter desc;
 
 data = pl.read_database(query, connection=engine).filter(pl.col("ter") > 500)
 
-data.write_excel("uzemek_2024.xlsx")
+data.write_excel("output/uzemek_2024.xlsx")

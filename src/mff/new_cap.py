@@ -596,3 +596,44 @@ def maximize_ratio(x0, eur_per_ha, yfs_per_ha, redist_per_ha):
         method="Nelder-Mead",
     )
     return float(np.exp(res.x[0]))
+
+
+def create_data_for_hist(
+    data: pd.DataFrame,
+    dabis_per_ha: float,
+    redist_per_ha: tuple[float, float],
+    cis_ratio: float = 1,
+    flat_rate: float = 0,
+) -> pd.DataFrame:
+    data_with_subs = compute_capped_subsidies(data, dabis_per_ha, 90, redist_per_ha)
+
+    cis_columns = [
+        "subs_tk_cukorrepa",
+        "subs_tk_szemes_feherjenoveny",
+        "subs_tk_szalas_feherjenoveny",
+        "subs_tk_extenziv_gyumolcs",
+        "subs_tk_intenziv_gyumolcs",
+        "subs_tk_ipari_olajnoveny",
+        "subs_tk_ipari_zoldsegnoveny",
+        "subs_tk_zoldsegnoveny",
+        "subs_tk_rizs",
+        "subs_tk_hizottbika",
+        "subs_tk_anyatehen",
+        "subs_tk_tejhasznu_tehen",
+        "subs_tk_anyajuh",
+    ]
+
+    data_with_subs["subs_cur"] = (
+        data_with_subs["subs_biss"]
+        + data_with_subs["subs_redist"]
+        + data_with_subs["subs_yfs"]
+        + data_with_subs[cis_columns].fillna(0).sum(axis=1)
+        + data_with_subs["subs_aop"].fillna(0)
+        + data_with_subs["subs_vp_akg_2021"].fillna(0)
+    )
+
+    data_with_subs["subs_capped"] += (
+        cis_ratio * data_with_subs[cis_columns].fillna(0).sum(axis=1)
+        + flat_rate * data_with_subs["area_aop"]
+    )
+    return data_with_subs
