@@ -29,7 +29,7 @@ def generate_data_for_gams(base_year: int, engine: Engine) -> None:
         ORDER BY area_biss_criss
     """)
     data = pd.read_sql_query(sql, con=engine, params={"base_year": base_year})
-    data.to_csv("base_2024.csv", index=False)
+    data.to_csv("input/base_2024.csv", index=False)
 
 
 def compute_dabis_support_summary(data: pd.DataFrame) -> pd.DataFrame:

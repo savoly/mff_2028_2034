@@ -64,7 +64,7 @@ data["megye"] = data["megye"].fillna("Ismeretlen")
 
 df = data.drop("regszam", axis=1).sort_values(by="area_biss_criss")
 
-df.to_csv("data_2024.csv", index=False)
+df.to_csv("input/data_2024.csv", index=False)
 
 rename_rules = {
     "subs_biss": "biss",
@@ -100,4 +100,4 @@ target_cols = [
 ]
 
 df_aligned = df.rename(columns=rename_rules)[target_cols]
-df_aligned.to_csv("data_2024_aligned.csv", index=False)
+df_aligned.to_csv("input/data_2024_aligned.csv", index=False)
