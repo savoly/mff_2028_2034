@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from mff.new_cap import compute_dabis_support_summary, read_base_data, find_flat_rate
+from mff.new_cap import compute_dabis_support_summary, find_flat_rate, read_base_data
 from mff.utils import c_round
 
 st.set_page_config(page_title="MFF számítások", layout="wide")
@@ -86,7 +86,7 @@ def main():
             st.subheader("Paraméterekből számolt kulcsértékek")
             st.dataframe(subs_df, use_container_width=True)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             st.error(f"Hiba a számítás során: {e}")
 
 

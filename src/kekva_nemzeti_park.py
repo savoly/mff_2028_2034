@@ -1,7 +1,6 @@
-from data_tools.db import Manager
-
 import polars as pl
-from sqlalchemy import text, bindparam
+from data_tools.db import Manager
+from sqlalchemy import bindparam, text
 
 engine = Manager("mvh-admin", "mvh").engine
 
@@ -51,7 +50,7 @@ df = data.join(df, on="regszam", how="left")
 def query_data_kifiz(regszam_lst, ev_lst):
     query = text("""
        SELECT ev, regszam, nev, cim, jogcim, tam FROM mvh_kif.kifiz
-        WHERE ev IN :ev_lst AND 
+        WHERE ev IN :ev_lst AND
               regszam IN :regszam_lst AND
               tam > 0
     """).bindparams(

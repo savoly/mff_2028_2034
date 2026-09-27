@@ -1,9 +1,10 @@
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from typing import Literal
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-from typing import Literal
-from collections.abc import Callable, Iterable, Mapping
 from sqlalchemy.engine import Engine
 
 from mff.new_cap import apply_reductions, cal_redist

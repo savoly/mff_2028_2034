@@ -1,7 +1,7 @@
 from decimal import ROUND_HALF_UP, Decimal, getcontext
+
 import pandas as pd
 from sqlalchemy.engine import Engine
-
 
 round_context = getcontext()
 round_context.rounding = ROUND_HALF_UP

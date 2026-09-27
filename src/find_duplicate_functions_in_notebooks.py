@@ -4,7 +4,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Literal
 
-
 Mode = Literal["name", "signature", "body"]
 
 
@@ -43,7 +42,7 @@ def find_duplicate_functions_in_notebooks(
     for path in notebook_paths:
         try:
             nb = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             print(f"Skipping {path}: could not read JSON ({exc})")
             continue
 

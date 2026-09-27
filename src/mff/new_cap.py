@@ -2,14 +2,41 @@ from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import RootResults, root_scalar, minimize
-
-from sqlalchemy.engine import Engine
+from scipy.optimize import RootResults, minimize, root_scalar
 from sqlalchemy import text
+from sqlalchemy.engine import Engine
 
-from utils import c_round
+from mff.utils import c_round
 
 Number = float | int
+
+
+def query_mepar_data(engine) -> pd.DataFrame:
+    QUERY = """
+    SELECT DISTINCT ON (t.regszam)
+              t.regszam,
+              h.megye_nev AS megye
+    FROM ek_adatok.tera t
+    LEFT JOIN ek_adatok.mepar m
+        ON t.ev = m.ev
+       AND t.mepar_blokkaz = m.mepar_blokkaz
+    LEFT JOIN szotar.hnt_2024 h
+        ON m.mepar_blokk_telepules = h.helyseg_nev
+    WHERE
+        t.ev = 2024
+        AND t.teruletalapu_alaptamogatas = 1
+        AND t.tam_nem_ig = 0
+        AND t.terulet_elf > 0
+    GROUP BY
+        t.regszam,
+        h.megye_nev
+    ORDER BY
+        t.regszam,
+        SUM(t.terulet_elf) DESC,
+        h.megye_nev
+    """
+
+    return pd.read_sql(sql=QUERY, con=engine)
 
 
 def generate_data_for_gams(base_year: int, engine: Engine) -> None:
@@ -145,7 +172,8 @@ def apply_reductions_vec(series: pd.Series) -> pd.Series:
 
 
 def cal_redist_vec(
-    biss_ter: pd.Series | np.ndarray, redist_per_ha=(86.98, 43.49)
+    biss_ter: pd.Series | np.ndarray,
+    redist_per_ha=(87.72217967580578, 43.86108983790289),
 ) -> np.ndarray:
     x = np.asarray(biss_ter, dtype=float)
 
@@ -156,7 +184,10 @@ def cal_redist_vec(
     return result
 
 
-def cal_redist(biss_ter: float, redist_per_ha=[86.98, 43.49]) -> float:
+def cal_redist(
+    biss_ter: float,
+    redist_per_ha: tuple[float, float] = (87.72217967580578, 43.86108983790289),
+) -> float:
     if biss_ter <= 1200 and biss_ter != 0:
         part1 = redist_per_ha[0] * min(10, biss_ter)
         part2 = redist_per_ha[1] * max(0, min(150, biss_ter) - 10)
@@ -284,9 +315,9 @@ def generate_extended_base_data(base_year: int, engine: Engine) -> pd.DataFrame:
         ].tolist()
         data.loc[~data["regszam"].isin(yfs_eligible), "area_yfs"] = 0
     data["area_yfs_cur_eligible"] = np.minimum(data["area_yfs"], 300)
-    data["subs_biss"] = data["area_biss_criss"] * 148.1
+    data["subs_biss"] = data["area_biss_criss"] * 148.38544462390817
     data["subs_redist"] = cal_redist_vec(data["area_biss_criss"])
-    data["subs_yfs"] = data["area_yfs_cur_eligible"] * 90
+    data["subs_yfs"] = data["area_yfs_cur_eligible"] * 93.56369030533665
 
     data.to_parquet(f"input/data_extended_{base_year}.parquet")
     return data
@@ -313,9 +344,9 @@ def generate_base_data(base_year: int, engine: Engine) -> pd.DataFrame:
         ].tolist()
         data.loc[~data["regszam"].isin(yfs_eligible), "area_yfs"] = 0
     data["area_yfs_cur_eligible"] = np.minimum(data["area_yfs"], 300)
-    data["subs_biss"] = data["area_biss_criss"] * 148.1
+    data["subs_biss"] = data["area_biss_criss"] * 148.38544462390817
     data["subs_redist"] = cal_redist_vec(data["area_biss_criss"])
-    data["subs_yfs"] = data["area_yfs_cur_eligible"] * 90
+    data["subs_yfs"] = data["area_yfs_cur_eligible"] * 93.56369030533665
 
     data.to_parquet(f"input/data_{base_year}.parquet")
     return data
@@ -413,7 +444,7 @@ def summarize_farms_by_area_categories(
         include_lowest=True,
     )
 
-    total_farms: int = int(len(df))
+    total_farms: int = len(df)
     total_area: float = float(df["area_biss_criss"].sum())
 
     grouped: pd.DataFrame = (
@@ -461,8 +492,10 @@ def summarize_farms_by_area_categories(
 
 
 def compute_current_support(hectares: float, yfs: float) -> float:
-    yfs = 93.10 if yfs != 0 else 0
-    return 148.1 * hectares + cal_redist(hectares) + yfs * min(hectares, 300)
+    yfs = 93.56369030533665 if yfs != 0 else 0
+    return (
+        148.38544462390817 * hectares + cal_redist(hectares) + yfs * min(hectares, 300)
+    )
 
 
 def calc_steps(
@@ -486,7 +519,8 @@ def calc_thresholds(
     result = []
     for val in thresholds:
         res = root_scalar(
-            lambda x: calc_steps(x, val, eur_per_ha, redist_per_ha, yfs_per_ha),
+            calc_steps,
+            args=(val, eur_per_ha, redist_per_ha, yfs_per_ha),
             bracket=(1e1, 1e5),
             method="brentq",
         ).root
@@ -569,8 +603,6 @@ def calc_degressive_and_capping_steps(
         df = df[mask]
     elif type_of_calc == "not-yf":
         df = df[~mask]
-    else:
-        df = df
 
     return create_dabis_summary(df, bins, labels)
 

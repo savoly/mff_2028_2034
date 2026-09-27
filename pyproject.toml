@@ -42,6 +42,7 @@ types-shapely = "*"
 jenkspy = "*"
 unidecode = "*"
 streamlit = "^1.51.0"
+sympy = "^1.14.0"
 
 [tool.poetry.group.dev.dependencies]
 nbqa = { version = "*", extras = ["toolchain"] }

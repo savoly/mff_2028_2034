@@ -1,3 +1,5 @@
+from typing import cast
+
 import geopandas as gpd
 import mapclassify
 import matplotlib as mpl
@@ -7,10 +9,9 @@ import pandas as pd
 import polars as pl
 from matplotlib.patches import Patch
 from matplotlib.patheffects import withStroke
-from mff.new_cap import c_round
 from shapely.geometry import box
 
-from typing import cast
+from mff.new_cap import c_round
 
 # data sources: * NUTS 3 population data: https://ec.europa.eu/eurostat/databrowser/view/demo_r_pjanaggr3/default/table
 #               * Available budget of Cohesion Policy 2021-2027: https://ec.europa.eu/regional_policy/funding/available-budget_en
@@ -217,7 +218,7 @@ def gradient_row(row: pd.Series) -> list[str]:
 
 
 def plot_agri_prosperity_gap(result) -> None:
-    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+    _, ax = plt.subplots(1, 1, figsize=(12, 8))
 
     result.plot(
         column="agri_prosperity_gap",
@@ -266,7 +267,7 @@ def plot_agri_prosperity_gap(result) -> None:
 
 
 def plot_regional_prosperity_gap(result) -> None:
-    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+    _, ax = plt.subplots(1, 1, figsize=(12, 8))
 
     result.plot(
         column="regional_prosperity_gap",
@@ -336,14 +337,14 @@ def plot_agri_and_regional_prosperity_gap(result):
     )
 
     # --- Jenks binning with readable labels ---
-    result["agri_bins"], agri_labels, agri_edges = make_jenks_bins(m_agri, k=3)
-    result["regional_bins"], reg_labels, reg_edges = make_jenks_bins(m_reg, k=3)
+    result["agri_bins"], agri_labels, _agri_edges = make_jenks_bins(m_agri, k=3)
+    result["regional_bins"], reg_labels, _agri_edges = make_jenks_bins(m_reg, k=3)
 
     # discrete colormaps
     cmap_agri = mpl.colormaps["YlOrRd"].resampled(len(agri_labels))
     cmap_reg = mpl.colormaps["YlGnBu"].resampled(len(reg_labels))
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    _, axes = plt.subplots(1, 2, figsize=(12, 6))
 
     # --- Agri ---
     result.plot(
