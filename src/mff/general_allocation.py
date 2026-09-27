@@ -31,23 +31,19 @@ def read_data_nuts3_lvl() -> pl.DataFrame:
     )
 
 
-def calculate_agri_prosperity_gap(data_country: pl.DataFrame) -> pl.DataFrame:
-    dp_per_ha_eu = data_country.select(pl.sum("dp_2027") / pl.sum("pea_2022")).item()
-
+def calculate_agri_prosperity_gap(
+    data_country: pl.DataFrame,
+) -> pl.DataFrame:
+    dp_per_ha_eu = pl.col("dp_2027").sum() / pl.col("pea_2022").sum()
     dp_per_ha_country = pl.col("dp_2027") / pl.col("pea_2022")
     pea_share = pl.col("pea_2022") / pl.col("dp_2027")
-    gap_component = (0.9 * dp_per_ha_eu) - dp_per_ha_country
 
-    result = data_country.with_columns(
-        [
-            dp_per_ha_country.alias("dp_per_ha_country"),
-            (gap_component.clip(lower_bound=0) * pea_share).alias(
-                "agri_prosperity_gap"
-            ),
-        ]
+    return data_country.select(
+        "geo_codes",
+        agri_prosperity_gap=(
+            (0.9 * dp_per_ha_eu - dp_per_ha_country).clip(lower_bound=0) * pea_share
+        ),
     )
-
-    return result.select("geo_codes", "agri_prosperity_gap")
 
 
 def calculate_regional_prosperity_gap(data_nuts3: pl.DataFrame) -> pl.DataFrame:
@@ -66,33 +62,27 @@ def calculate_regional_prosperity_gap(data_nuts3: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def calculate_gni_multiplier(data_country: pl.DataFrame) -> pl.DataFrame:
-    gni_pc_pps_2023_eu_avg = 38093
+def calculate_gni_multiplier(
+    data_country: pl.DataFrame,
+) -> pl.DataFrame:
+    gni_pc_pps_2023_eu_avg = 38_093
 
     return data_country.select(
-        [
-            pl.col("geo_codes"),
-            (gni_pc_pps_2023_eu_avg / pl.col("gni_pc_pps_2023")).alias(
-                "gni_multiplier"
-            ),
-        ]
+        "geo_codes",
+        gni_multiplier=gni_pc_pps_2023_eu_avg / pl.col("gni_pc_pps_2023"),
     )
 
 
-def calculate_product_part1(data_country: pl.DataFrame) -> pl.DataFrame:
+def calculate_product_part1(
+    data_country: pl.DataFrame,
+) -> pl.DataFrame:
     return data_country.select(
-        [
-            pl.col("geo_codes"),
-            (
-                (
-                    data_country["population_2024"]
-                    / data_country["population_2024"].sum()
-                    + data_country["arope_ra_1000_pop_2024"]
-                    / data_country["arope_ra_1000_pop_2024"].sum()
-                )
-                / 2
-            ).alias("product_part1"),
-        ]
+        "geo_codes",
+        product_part1=(
+            pl.col("population_2024") / pl.col("population_2024").sum()
+            + pl.col("arope_ra_1000_pop_2024") / pl.col("arope_ra_1000_pop_2024").sum()
+        )
+        / 2,
     )
 
 
@@ -121,11 +111,8 @@ def calculate_general_allocation(
 
     # normalize a_i
     result_pl = result_pl.with_columns(
-        (result_pl["product"] * 1 / result_pl["product"].sum()).alias("a_i")
-    )
-    result_pl = result_pl.with_columns(
-        (748.9 * result_pl["a_i"]).alias("allocation_general")
-    )
+        a_i=pl.col("product") / pl.col("product").sum()
+    ).with_columns(allocation_general=748.9 * pl.col("a_i"))
 
     result_pd: pd.DataFrame = result_pl.to_pandas()
 
@@ -338,7 +325,7 @@ def plot_agri_and_regional_prosperity_gap(result):
 
     # --- Jenks binning with readable labels ---
     result["agri_bins"], agri_labels, _agri_edges = make_jenks_bins(m_agri, k=3)
-    result["regional_bins"], reg_labels, _agri_edges = make_jenks_bins(m_reg, k=3)
+    result["regional_bins"], reg_labels, _reg_edges = make_jenks_bins(m_reg, k=3)
 
     # discrete colormaps
     cmap_agri = mpl.colormaps["YlOrRd"].resampled(len(agri_labels))

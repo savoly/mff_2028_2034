@@ -19,7 +19,7 @@ from mff.new_cap import (
     calc_thresholds,
     compute_capped_subsidies,
     compute_current_support,
-    find_cur_new_equal_root,
+    find_cur_new_equal_roots,
     maximize_ratio,
 )
 from mff.utils import c_round
@@ -42,8 +42,12 @@ def plot_per_ha(
     title: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = 255000 / policy.base_payment_per_ha
-    x_values = np.linspace(0.01, ha_upper_l, 100 * int(ha_upper_l / 10) + 1)
+    ha_upper_l = 255_000 / policy.base_payment_per_ha
+    x_values = np.linspace(
+        0.01,
+        ha_upper_l,
+        100 * int(ha_upper_l / 10) + 1,
+    )
 
     y_values_capping_per_ha = [
         apply_reductions(
@@ -59,24 +63,34 @@ def plot_per_ha(
         compute_current_support(x, policy.yfs_per_ha) / x for x in x_values
     ]
 
-    zero_cross_x = c_round(
-        find_cur_new_equal_root(
-            policy.base_payment_per_ha, policy.redist_params, policy.yfs_per_ha
-        ),
-        2,
+    zero_crossings = find_cur_new_equal_roots(
+        policy.base_payment_per_ha,
+        policy.redist_params,
+        policy.yfs_per_ha,
     )
+
+    # Only plot equality points that are inside the plotted range
+    zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
 
     thresholds = [20_000, 50_000, 75_000, 255_000]
     thresholds_ha = calc_thresholds(
-        thresholds, policy.base_payment_per_ha, policy.redist_params, policy.yfs_per_ha
+        thresholds,
+        policy.base_payment_per_ha,
+        policy.redist_params,
+        policy.yfs_per_ha,
     )
 
     plt.style.use("seaborn-v0_8-whitegrid")
-    _, ax = plt.subplots(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(12, 7))
 
     ax.plot(
-        x_values, y_values_capping_per_ha, label=label1, color="#0072B2", linewidth=2.5
+        x_values,
+        y_values_capping_per_ha,
+        label=label1,
+        color="#0072B2",
+        linewidth=2.5,
     )
+
     ax.plot(
         x_values,
         y_values_current_per_ha,
@@ -86,16 +100,27 @@ def plot_per_ha(
         linewidth=2.5,
     )
 
-    for t, th_ha in zip(thresholds, thresholds_ha):
-        ax.axvline(x=th_ha, color="red", linestyle="--", linewidth=1.5, alpha=0.6)
-        label = (
-            f"Capping határ: 255 000 €\n({c_round(th_ha, 0):,.0f} ha)".replace(",", " ")
-            if t == 255_000
-            else f"{t:,.0f} €\n({c_round(th_ha, 0):,.0f} ha)".replace(",", " ")
+    y_max = max(y_values_capping_per_ha)
+
+    # Degression / capping thresholds
+    for threshold, threshold_ha in zip(thresholds, thresholds_ha):
+        ax.axvline(
+            x=threshold_ha,
+            color="red",
+            linestyle="--",
+            linewidth=1.5,
+            alpha=0.6,
         )
+
+        label = (
+            f"Capping határ: 255 000 €\n({c_round(threshold_ha, 0):,.0f} ha)"
+            if threshold == 255_000
+            else f"{threshold:,.0f} €\n({c_round(threshold_ha, 0):,.0f} ha)"
+        ).replace(",", " ")
+
         ax.text(
-            th_ha + 5,
-            max(y_values_capping_per_ha) * 0.42,
+            threshold_ha + 5,
+            y_max * 0.42,
             label,
             rotation=45,
             verticalalignment="bottom",
@@ -103,27 +128,45 @@ def plot_per_ha(
             fontsize=10,
         )
 
-    ax.axvline(
-        x=zero_cross_x,
-        color="#0072B2",
-        linestyle="--",
-        linewidth=1.5,
-    )
-    label = f"Egyenlőségi pont\n({zero_cross_x:,.0f} ha)"
+    # Current vs new support equality points
+    for i, zero_cross_x in enumerate(zero_crossings):
+        ax.axvline(
+            x=zero_cross_x,
+            color="#0072B2",
+            linestyle="--",
+            linewidth=1.5,
+        )
 
-    ax.text(
-        zero_cross_x + 5,
-        max(y_values_capping_per_ha) * 0.85,
-        label,
-        rotation=45,
-        verticalalignment="bottom",
-        color="#0072B2",
-        fontsize=10,
-    )
+        label = f"Egyenlőségi pont\n({zero_cross_x:,.0f} ha)"
 
-    ax.set_xlabel("Üzemméret (ha)", fontsize=12, fontweight="bold")
-    ax.set_ylabel("Támogatás hektáronként (€)", fontsize=12, fontweight="bold")
-    ax.set_title(title, fontsize=14, fontweight="bold")
+        # Slight vertical staggering if there are multiple roots
+        y_position = y_max * (0.85 - i * 0.12)
+
+        ax.text(
+            zero_cross_x + 5,
+            y_position,
+            label,
+            rotation=45,
+            verticalalignment="bottom",
+            color="#0072B2",
+            fontsize=10,
+        )
+
+    ax.set_xlabel(
+        "Üzemméret (ha)",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax.set_ylabel(
+        "Támogatás hektáronként (€)",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax.set_title(
+        title,
+        fontsize=14,
+        fontweight="bold",
+    )
 
     ax.text(
         x_values[-1],
@@ -133,6 +176,7 @@ def plot_per_ha(
         color="#0072B2",
         va="bottom",
     )
+
     ax.text(
         x_values[-1],
         y_values_current_per_ha[-1],
@@ -145,8 +189,19 @@ def plot_per_ha(
     ax.xaxis.set_major_formatter(formatter)
     ax.yaxis.set_major_formatter(formatter)
 
-    ax.legend(loc="upper right", fontsize=11, frameon=True)
-    plt.savefig(output_path, dpi=300)
+    ax.legend(
+        loc="upper right",
+        fontsize=11,
+        frameon=True,
+    )
+
+    fig.tight_layout()
+    fig.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches="tight",
+    )
+
     plt.show()
 
 
@@ -157,8 +212,12 @@ def plot_total(
     title: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = 255000 / policy.base_payment_per_ha
-    x_values = np.linspace(0.01, ha_upper_l, 100 * int(ha_upper_l / 10) + 1)
+    ha_upper_l = 255_000 / policy.base_payment_per_ha
+    x_values = np.linspace(
+        0.01,
+        ha_upper_l,
+        100 * int(ha_upper_l / 10) + 1,
+    )
 
     y_values_capping = [
         apply_reductions(
@@ -168,24 +227,36 @@ def plot_total(
         )
         for x in x_values
     ]
+
     y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
 
-    zero_cross_x = c_round(
-        find_cur_new_equal_root(
-            policy.base_payment_per_ha, policy.redist_params, policy.yfs_per_ha
-        ),
-        2,
+    zero_crossings = find_cur_new_equal_roots(
+        policy.base_payment_per_ha,
+        policy.redist_params,
+        policy.yfs_per_ha,
     )
+
+    zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
 
     thresholds = [20_000, 50_000, 75_000, 255_000]
     thresholds_ha = calc_thresholds(
-        thresholds, policy.base_payment_per_ha, policy.redist_params, policy.yfs_per_ha
+        thresholds,
+        policy.base_payment_per_ha,
+        policy.redist_params,
+        policy.yfs_per_ha,
     )
 
     plt.style.use("seaborn-v0_8-whitegrid")
-    _, ax = plt.subplots(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(12, 7))
 
-    ax.plot(x_values, y_values_capping, label=label1, color="#0072B2", linewidth=2.5)
+    ax.plot(
+        x_values,
+        y_values_capping,
+        label=label1,
+        color="#0072B2",
+        linewidth=2.5,
+    )
+
     ax.plot(
         x_values,
         y_values_current,
@@ -195,16 +266,26 @@ def plot_total(
         linewidth=2.5,
     )
 
-    for t, th_ha in zip(thresholds, thresholds_ha):
-        ax.axvline(x=th_ha, color="red", linestyle="--", linewidth=1, alpha=0.6)
-        label = (
-            f"Capping határ: 255 000 €\n({c_round(th_ha, 0):,.0f} ha)".replace(",", " ")
-            if t == 255_000
-            else f"{t:,.0f} €\n({c_round(th_ha, 0):,.0f} ha)".replace(",", " ")
+    y_max = max(y_values_capping)
+
+    for threshold, threshold_ha in zip(thresholds, thresholds_ha):
+        ax.axvline(
+            x=threshold_ha,
+            color="red",
+            linestyle="--",
+            linewidth=1,
+            alpha=0.6,
         )
+
+        label = (
+            f"Capping határ: 255 000 €\n({c_round(threshold_ha, 0):,.0f} ha)"
+            if threshold == 255_000
+            else f"{threshold:,.0f} €\n({c_round(threshold_ha, 0):,.0f} ha)"
+        ).replace(",", " ")
+
         ax.text(
-            th_ha + 5,
-            max(y_values_capping) * 0.05,
+            threshold_ha + 5,
+            y_max * 0.05,
             label,
             rotation=45,
             verticalalignment="bottom",
@@ -212,40 +293,55 @@ def plot_total(
             fontsize=10,
         )
 
-    ax.axvline(
-        x=zero_cross_x,
-        color="#0072B2",
-        linestyle="--",
-        linewidth=1.5,
-    )
-    label = f"Egyenlőségi pont\n({zero_cross_x:,.0f} ha)"
+    for i, zero_cross_x in enumerate(zero_crossings):
+        ax.axvline(
+            x=zero_cross_x,
+            color="#0072B2",
+            linestyle="--",
+            linewidth=1.5,
+        )
 
-    ax.text(
-        zero_cross_x + 5,
-        max(y_values_capping) * 0.85,
-        label,
-        rotation=45,
-        verticalalignment="bottom",
-        color="#0072B2",
-        fontsize=10,
-    )
+        y_position = y_max * (0.85 - i * 0.12)
 
-    ax.set_xlabel("Üzemméret (ha)", fontsize=12, fontweight="bold")
-    ax.set_ylabel("Támogatás (€)", fontsize=12, fontweight="bold")
-    ax.set_title(title, fontsize=14, fontweight="bold")
+        ax.text(
+            zero_cross_x + 5,
+            y_position,
+            f"Egyenlőségi pont\n({zero_cross_x:,.0f} ha)",
+            rotation=45,
+            verticalalignment="bottom",
+            color="#0072B2",
+            fontsize=10,
+        )
+
+    ax.set_xlabel(
+        "Üzemméret (ha)",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax.set_ylabel(
+        "Támogatás (€)",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax.set_title(
+        title,
+        fontsize=14,
+        fontweight="bold",
+    )
 
     ax.text(
         x_values[-1],
         y_values_capping[-1],
-        f"{y_values_capping[-1]:,.0f}".replace(",", " ") + " €",
+        f"{y_values_capping[-1]:,.0f} €".replace(",", " "),
         fontsize=10,
         color="#0072B2",
         va="bottom",
     )
+
     ax.text(
         x_values[-1],
         y_values_current[-1],
-        f"{y_values_current[-1]:,.0f}".replace(",", " ") + " €",
+        f"{y_values_current[-1]:,.0f} €".replace(",", " "),
         fontsize=10,
         color="#D55E00",
         va="bottom",
@@ -254,8 +350,19 @@ def plot_total(
     ax.xaxis.set_major_formatter(formatter)
     ax.yaxis.set_major_formatter(formatter)
 
-    ax.legend(loc="upper left", fontsize=11, frameon=True)
-    plt.savefig(output_path, dpi=300)
+    ax.legend(
+        loc="upper left",
+        fontsize=11,
+        frameon=True,
+    )
+
+    fig.tight_layout()
+    fig.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches="tight",
+    )
+
     plt.show()
 
 
@@ -266,9 +373,13 @@ def plot_diff_dual_axis(
     farm_areas: list[float] | np.ndarray,
     output_path: str,
     cum_mode: str = "farms",
-):
-    ha_upper_l = 255000 / policy.base_payment_per_ha
-    x_values = np.linspace(0.01, ha_upper_l, 100 * int(ha_upper_l / 10) + 1)
+) -> None:
+    ha_upper_l = 255_000 / policy.base_payment_per_ha
+    x_values = np.linspace(
+        0.01,
+        ha_upper_l,
+        100 * int(ha_upper_l / 10) + 1,
+    )
 
     y_values_capping = [
         apply_reductions(
@@ -278,6 +389,7 @@ def plot_diff_dual_axis(
         )
         for x in x_values
     ]
+
     y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
 
     diff_pct = [
@@ -285,39 +397,87 @@ def plot_diff_dual_axis(
         for cap, curr in zip(y_values_capping, y_values_current)
     ]
 
+    # Maximum
     peak_x = maximize_ratio(
-        50, policy.base_payment_per_ha, policy.yfs_per_ha, policy.redist_params
+        50,
+        policy.base_payment_per_ha,
+        policy.yfs_per_ha,
+        policy.redist_params,
     )
+
     peak_x_rounded = int(c_round(peak_x, 0))
+
     peak_y = 100 * calc_ratio_subs(
-        peak_x, policy.base_payment_per_ha, policy.yfs_per_ha, policy.redist_params
+        peak_x,
+        policy.base_payment_per_ha,
+        policy.yfs_per_ha,
+        policy.redist_params,
     )
+
     peak_y_rounded = c_round(peak_y, 2)
 
-    zero_cross_x = find_cur_new_equal_root(
-        policy.base_payment_per_ha, policy.redist_params, policy.yfs_per_ha
+    # Equality points
+    zero_crossings = find_cur_new_equal_roots(
+        policy.base_payment_per_ha,
+        policy.redist_params,
+        policy.yfs_per_ha,
     )
 
+    zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
+
+    # Farm-size distribution
     fa = np.asarray(farm_areas, dtype=float)
-    fa = fa[(fa > 0) & (fa <= ha_upper_l)]
+
+    fa = fa[np.isfinite(fa) & (fa > 0) & (fa <= ha_upper_l)]
+
+    if len(fa) == 0:
+        raise ValueError("No valid farm areas in the plotted range.")
+
     fa_sorted = np.sort(fa)
 
-    n = len(fa_sorted)
-    cum_farm_pct = np.arange(1, n + 1) / n * 100  # 1..n / n * 100
-    x_cum = fa_sorted
-
-    num_farms = (fa_sorted <= zero_cross_x).sum()
-    pct_farms = num_farms / len(fa_sorted) * 100
+    cum_farm_pct = np.arange(1, len(fa_sorted) + 1) / len(fa_sorted) * 100
 
     total_area = fa_sorted.sum()
-    area_below = fa_sorted[fa_sorted <= zero_cross_x].sum()
-    pct_area = area_below / total_area * 100
-
     cum_area_pct = np.cumsum(fa_sorted) / total_area * 100
 
-    textbox_text = f"Az üzemek {pct_farms:.1f}%-a és a terület {pct_area:.1f}%-a van {zero_cross_x:.2f} ha alatt."
+    # Textbox
+    if len(zero_crossings) >= 2:
+        lower, upper = zero_crossings[:2]
 
-    _, ax1 = plt.subplots(figsize=(12, 7))
+        mask_between = (fa_sorted >= lower) & (fa_sorted <= upper)
+
+        pct_farms = mask_between.mean() * 100
+        pct_area = fa_sorted[mask_between].sum() / total_area * 100
+
+        textbox_text = (
+            f"A két egyenlőségi pont ({lower:.0f}–{upper:.0f} ha) közé\n"
+            f"az üzemek {pct_farms:.1f}%-a és "
+            f"a terület {pct_area:.1f}%-a esik."
+        )
+
+    elif len(zero_crossings) == 1:
+        zero_cross_x = zero_crossings[0]
+
+        mask_below = fa_sorted <= zero_cross_x
+
+        pct_farms = mask_below.mean() * 100
+        pct_area = fa_sorted[mask_below].sum() / total_area * 100
+
+        textbox_text = (
+            f"{zero_cross_x:.0f} ha alatt az üzemek "
+            f"{pct_farms:.1f}%-a és a terület "
+            f"{pct_area:.1f}%-a található."
+        )
+
+    else:
+        textbox_text = "Nincs egyenlőségi pont a vizsgált tartományban."
+
+    # ------------------------------------------------------------
+    # Plot
+    # ------------------------------------------------------------
+    plt.style.use("seaborn-v0_8-whitegrid")
+
+    fig, ax1 = plt.subplots(figsize=(12, 7))
     ax1.set_axisbelow(True)
 
     ax1.plot(
@@ -327,15 +487,29 @@ def plot_diff_dual_axis(
         linewidth=2.2,
         label=scen_name,
     )
-    ax1.set_ylabel("Eltérés (%)", fontsize=12, fontweight="bold")
-    ax1.set_xlabel("Üzemméret (ha)", fontsize=12, fontweight="bold")
-    ax1.axhline(0, linestyle="--", color="black", linewidth=1)
+
+    ax1.axhline(
+        0,
+        linestyle="--",
+        color="black",
+        linewidth=1,
+    )
+
+    ax1.set_xlabel(
+        "Üzemméret (ha)",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax1.set_ylabel(
+        "Eltérés (%)",
+        fontsize=12,
+        fontweight="bold",
+    )
 
     ax1.yaxis.set_major_locator(MultipleLocator(10))
 
     step = 10
-
-    values_for_ylim = diff_pct + [peak_y]
+    values_for_ylim = [*diff_pct, peak_y]
 
     data_min = min(values_for_ylim)
     data_max = max(values_for_ylim)
@@ -345,97 +519,199 @@ def plot_diff_dual_axis(
 
     ax1.set_ylim(ymin, ymax)
 
-    ax1.axvline(peak_x, color="red", linestyle="--", linewidth=1.5, label="Maximum")
-    ax1.axvline(
-        x=zero_cross_x,
-        color="#56B4E9",
-        linestyle="--",
-        linewidth=1.5,
-        label="Egyenlőségi pont",
-    )
-
-    x_offset = 60
-    y_offset = -5 if peak_y > max(diff_pct) * 0.8 else 5
-
-    ax1.annotate(
-        f"{peak_y_rounded}% ({peak_x_rounded} ha)",
-        xy=(peak_x, peak_y),
-        xytext=(peak_x + x_offset, peak_y + y_offset),
-        arrowprops={"arrowstyle": "->", "color": "red"},
-        fontsize=11,
-        fontweight="bold",
-        color="red",
-    )
-
-    ax1.annotate(
-        f"{int(c_round(zero_cross_x, 0))} ha",
-        xy=(zero_cross_x, 0),
-        xytext=(zero_cross_x + x_offset, 0 + y_offset),
-        arrowprops={"arrowstyle": "->", "color": "#56B4E9"},
-        fontsize=11,
-        fontweight="bold",
-        color="#56B4E9",
-    )
-
+    # ------------------------------------------------------------
+    # Secondary axis
+    # Must be created BEFORE annotations that use ax2/y2
+    # ------------------------------------------------------------
     ax2 = ax1.twinx()
 
     if cum_mode == "area":
         y2 = cum_area_pct
         y2_label = "Kumulált területarány (%)"
-    else:
+
+    elif cum_mode == "farms":
         y2 = cum_farm_pct
         y2_label = "Kumulált üzemszámarány (%)"
 
+    else:
+        raise ValueError("cum_mode must be 'farms' or 'area'.")
+
     ax2.plot(
-        x_cum,
+        fa_sorted,
         y2,
         color="0.3",
         linewidth=2,
-        linestyle="-",
         label=y2_label,
     )
-    ax2.set_ylabel(y2_label, fontsize=12, fontweight="bold")
+
+    ax2.set_ylabel(
+        y2_label,
+        fontsize=12,
+        fontweight="bold",
+    )
     ax2.set_ylim(0, 105)
     ax2.yaxis.set_major_formatter(PercentFormatter())
 
+    # ------------------------------------------------------------
+    # Vertical lines
+    # ------------------------------------------------------------
+    ax1.axvline(
+        peak_x,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label="Maximum",
+    )
+
+    for i, zero_cross_x in enumerate(zero_crossings):
+        ax1.axvline(
+            zero_cross_x,
+            color="#56B4E9",
+            linestyle="--",
+            linewidth=1.5,
+            label="Egyenlőségi pont" if i == 0 else None,
+        )
+
+    # ------------------------------------------------------------
+    # Maximum annotation
+    # ------------------------------------------------------------
+    cum_y_at_peak = np.interp(
+        peak_x,
+        fa_sorted,
+        y2,
+    )
+
+    peak_display_y = ax1.transData.transform((peak_x, peak_y))[1]
+
+    cum_display_y = ax2.transData.transform((peak_x, cum_y_at_peak))[1]
+
+    distance_px = abs(peak_display_y - cum_display_y)
+
+    peak_y_offset = -42 if distance_px < 60 else -28
+
+    if peak_x < ha_upper_l * 0.65:
+        peak_x_offset = 45
+        peak_ha = "left"
+    else:
+        peak_x_offset = -45
+        peak_ha = "right"
+
+    ax1.annotate(
+        f"{peak_y_rounded}% ({peak_x_rounded} ha)",
+        xy=(peak_x, peak_y),
+        xytext=(peak_x_offset, peak_y_offset),
+        textcoords="offset points",
+        ha=peak_ha,
+        va="top",
+        arrowprops={
+            "arrowstyle": "->",
+            "color": "red",
+            "linewidth": 1.2,
+        },
+        bbox={
+            "facecolor": "white",
+            "edgecolor": "none",
+            "alpha": 0.9,
+            "pad": 0.25,
+        },
+        fontsize=11,
+        fontweight="bold",
+        color="red",
+        zorder=20,
+    )
+
+    # ------------------------------------------------------------
+    # Equality-point annotations
+    # ------------------------------------------------------------
+    zero_offsets = [
+        (-35, 18),
+        (35, 18),
+    ]
+
+    for i, zero_cross_x in enumerate(zero_crossings):
+        if i < len(zero_offsets):
+            offset = zero_offsets[i]
+        else:
+            offset = (35, 18 + 16 * i)
+
+        ax1.annotate(
+            f"{zero_cross_x:.0f} ha",
+            xy=(zero_cross_x, 0),
+            xytext=offset,
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            arrowprops={
+                "arrowstyle": "->",
+                "color": "#56B4E9",
+                "linewidth": 1.1,
+            },
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.9,
+                "pad": 0.2,
+            },
+            fontsize=11,
+            fontweight="bold",
+            color="#56B4E9",
+            zorder=20,
+        )
+
+    # ------------------------------------------------------------
+    # Title / formatting
+    # ------------------------------------------------------------
     ax1.set_title(
         title_name,
         fontsize=14,
         fontweight="bold",
+        pad=18,
     )
 
-    try:
-        ax1.xaxis.set_major_formatter(formatter)
-        ax1.yaxis.set_major_formatter(formatter)
-    except NameError:
-        pass
+    ax1.xaxis.set_major_formatter(formatter)
+    ax1.yaxis.set_major_formatter(formatter)
 
-    lines_1, labels_1 = ax1.get_legend_handles_labels()
-    lines_2, labels_2 = ax2.get_legend_handles_labels()
-
+    # ------------------------------------------------------------
+    # Textbox placement
+    # ------------------------------------------------------------
     x_ref = x_values[int(len(x_values) * 0.8)]
 
-    idx2 = np.searchsorted(x_cum, x_ref, side="right") - 1
-    idx2 = np.clip(idx2, 0, len(x_cum) - 1)
+    idx2 = (
+        np.searchsorted(
+            fa_sorted,
+            x_ref,
+            side="right",
+        )
+        - 1
+    )
+
+    idx2 = np.clip(
+        idx2,
+        0,
+        len(fa_sorted) - 1,
+    )
+
     grey_y = y2[idx2]
 
     grey_disp = ax2.transData.transform((x_ref, grey_y))
+
     grey_axes = ax1.transAxes.inverted().transform(grey_disp)
+
     y_grey_frac = grey_axes[1]
 
     candidates = [0.9, 0.8, 0.7, 0.6]
+
     text_y_pos = next(
-        (c for c in candidates if abs(c - y_grey_frac) > 0.12),
+        (candidate for candidate in candidates if abs(candidate - y_grey_frac) > 0.12),
         0.85,
     )
 
-    _ = ax1.text(
+    ax1.text(
         0.98,
         text_y_pos,
         textbox_text,
         transform=ax1.transAxes,
         fontsize=11,
-        color="black",
         ha="right",
         va="top",
         bbox={
@@ -449,6 +725,12 @@ def plot_diff_dual_axis(
         clip_on=False,
     )
 
+    # ------------------------------------------------------------
+    # Combined legend
+    # ------------------------------------------------------------
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+
     ax1.legend(
         lines_1 + lines_2,
         labels_1 + labels_2,
@@ -459,8 +741,14 @@ def plot_diff_dual_axis(
         fontsize=11,
     )
 
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    fig.tight_layout()
+
+    fig.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches="tight",
+    )
+
     plt.show()
 
 
@@ -516,8 +804,12 @@ def plot_diff_pct(
     scen_name: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = 255000 / policy.base_payment_per_ha
-    x_values = np.linspace(0.01, ha_upper_l, 100 * int(ha_upper_l / 10) + 1)
+    ha_upper_l = 255_000 / policy.base_payment_per_ha
+    x_values = np.linspace(
+        0.01,
+        ha_upper_l,
+        100 * int(ha_upper_l / 10) + 1,
+    )
 
     y_values_capping = [
         apply_reductions(
@@ -527,6 +819,7 @@ def plot_diff_pct(
         )
         for x in x_values
     ]
+
     y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
 
     percent_diff = [
@@ -535,19 +828,30 @@ def plot_diff_pct(
     ]
 
     peak_x = maximize_ratio(
-        50, policy.base_payment_per_ha, policy.yfs_per_ha, policy.redist_params
+        50,
+        policy.base_payment_per_ha,
+        policy.yfs_per_ha,
+        policy.redist_params,
     )
     peak_x_rounded = int(c_round(peak_x, 0))
     peak_y = 100 * calc_ratio_subs(
-        peak_x, policy.base_payment_per_ha, policy.yfs_per_ha, policy.redist_params
+        peak_x,
+        policy.base_payment_per_ha,
+        policy.yfs_per_ha,
+        policy.redist_params,
     )
     peak_y_rounded = c_round(peak_y, 2)
 
-    zero_cross_x = find_cur_new_equal_root(
-        policy.base_payment_per_ha, policy.redist_params, policy.yfs_per_ha
+    zero_crossings = find_cur_new_equal_roots(
+        policy.base_payment_per_ha,
+        policy.redist_params,
+        policy.yfs_per_ha,
     )
 
-    _, ax = plt.subplots(figsize=(12, 6))
+    zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(12, 6))
 
     ax.plot(
         x_values,
@@ -558,33 +862,61 @@ def plot_diff_pct(
     )
 
     ax.axhline(0, color="black", linestyle="--", linewidth=1)
-    ax.axvline(peak_x, color="red", linestyle="--", linewidth=1.5, label="Maxmimum")
     ax.axvline(
-        x=zero_cross_x, color="#56B4E9", linestyle="--", label="Egyenlőségi pont"
+        peak_x,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label="Maximum",
     )
 
-    x_offset = 60
-    y_offset = -5 if peak_y > max(percent_diff) * 0.8 else 5
+    for i, zero_cross_x in enumerate(zero_crossings):
+        ax.axvline(
+            zero_cross_x,
+            color="#56B4E9",
+            linestyle="--",
+            linewidth=1.5,
+            label="Egyenlőségi pont" if i == 0 else None,
+        )
 
+    # Maximum
     ax.annotate(
         f"{peak_y_rounded}% ({peak_x_rounded} ha)",
         xy=(peak_x, peak_y),
-        xytext=(peak_x + x_offset, peak_y + y_offset),
-        arrowprops={"arrowstyle": "->", "color": "red"},
+        xytext=(35, -30),
+        textcoords="offset points",
+        arrowprops={
+            "arrowstyle": "->",
+            "color": "red",
+        },
         fontsize=11,
         fontweight="bold",
         color="red",
     )
 
-    ax.annotate(
-        f"{int(c_round(zero_cross_x, 0))} ha",
-        xy=(zero_cross_x, 0),
-        xytext=(zero_cross_x + x_offset, 0 + y_offset),
-        arrowprops={"arrowstyle": "->", "color": "#56B4E9"},
-        fontsize=11,
-        fontweight="bold",
-        color="#56B4E9",
-    )
+    # Egyenlőségi pontok
+    offsets = [
+        (-45, 18),
+        (15, 18),
+    ]
+
+    for i, zero_cross_x in enumerate(zero_crossings):
+        offset = offsets[i] if i < len(offsets) else (15, 18 + 18 * i)
+
+        ax.annotate(
+            f"{zero_cross_x:.0f} ha",
+            xy=(zero_cross_x, 0),
+            xytext=offset,
+            textcoords="offset points",
+            arrowprops={
+                "arrowstyle": "->",
+                "color": "#56B4E9",
+            },
+            fontsize=11,
+            fontweight="bold",
+            color="#56B4E9",
+            ha="center",
+        )
 
     ax.set_xlabel("Üzemméret (ha)", fontsize=12, fontweight="bold")
     ax.set_ylabel("Eltérés (%)", fontsize=12, fontweight="bold")
@@ -595,107 +927,183 @@ def plot_diff_pct(
     ax.xaxis.set_major_formatter(formatter)
     ax.yaxis.set_major_formatter(formatter)
 
-    plt.savefig(output_path, dpi=300)
+    fig.tight_layout()
+    fig.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches="tight",
+    )
     plt.show()
 
 
 def plot_allocation_with_fixed_rate(
     payment_rate: float,
-    subs_per_acre_results: list[float],
+    subs_per_ha_results: list[float],
     alloc_results: list[float],
     values: list[float],
-):
-    fig, ax = plt.subplots(figsize=(5, 3))
+) -> None:
+    x = np.asarray(subs_per_ha_results, dtype=float)
+    allocation = np.asarray(alloc_results, dtype=float)
+    rates = np.asarray(values, dtype=float)
 
-    x_values = subs_per_acre_results
-    ax.plot(
-        x_values,
-        alloc_results,
-        color="royalblue",
-        linewidth=3,
-        label="Total Allocation Needed",
-        zorder=2,
-    )
-    ax.set_xlabel("Support per Hectare (EUR)", fontsize=12, fontweight="bold")
-    ax.set_ylabel(
-        "Total Allocation Needed (Million EUR)",
-        color="royalblue",
-        fontsize=12,
-        fontweight="bold",
-    )
-    ax.tick_params(axis="y", labelcolor="royalblue")
+    if not (len(x) == len(allocation) == len(rates)):
+        raise ValueError("All input arrays must have the same length.")
 
-    ax = ax.twinx()
-    ax.plot(
-        x_values,
-        values,
-        color="darkorange",
-        linewidth=3,
+    fig, ax1 = plt.subplots(figsize=(8, 5))
+    ax2 = ax1.twinx()
+
+    # ------------------------------------------------------------
+    # Curves
+    # ------------------------------------------------------------
+    line1 = ax1.plot(
+        x,
+        allocation,
+        linewidth=2.5,
+        label="Szükséges keret",
+    )[0]
+
+    line2 = ax2.plot(
+        x,
+        rates,
+        linewidth=2.5,
         linestyle="--",
-        label="Payment Rate (EUR/ha)",
-        zorder=2,
-    )
-    ax.set_ylabel(
-        "Payment Rate (EUR/ha)", color="darkorange", fontsize=12, fontweight="bold"
-    )
-    ax.tick_params(axis="y", labelcolor="darkorange")
+        label="Kifizetési arány",
+    )[0]
 
-    payment_rate_fixed = payment_rate
-    ax.axhline(
-        payment_rate_fixed,
-        color="green",
-        linestyle="--",
+    fixed_line = ax2.axhline(
+        payment_rate,
+        linestyle=":",
         linewidth=2,
-        label="Fixed Payment Rate",
-        zorder=3,
+        label=f"Rögzített kifizetési arány ({payment_rate:.2f} EUR/ha)",
     )
 
-    idx = (np.abs(np.array(values) - payment_rate_fixed)).argmin()
-    intersection_x = round(x_values[idx], 2)
-    intersection_y1 = round(alloc_results[idx], 2)
-    intersection_y2 = round(values[idx], 2)
+    # ------------------------------------------------------------
+    # Find intersection by linear interpolation
+    # ------------------------------------------------------------
+    diff = rates - payment_rate
+    crossing_idx = np.flatnonzero(diff[:-1] * diff[1:] <= 0)
 
-    if abs(intersection_y2 - payment_rate) < 0.05:
-        intersection_y2 = payment_rate
+    if len(crossing_idx) == 0:
+        raise ValueError(
+            f"The fixed payment rate ({payment_rate}) does not intersect "
+            "the calculated payment-rate curve."
+        )
 
-    textstr = (
-        f"{'Support per Hectare:':<20}{intersection_x:>8.2f} EUR/ha\n"
-        f"{'Allocation Needed:':<20}{intersection_y1:>8.2f} M EUR\n"
-        f"{'Payment Rate:':<20}{intersection_y2:>8.2f} EUR/ha"
+    i = crossing_idx[0]
+
+    x1, x2 = x[i], x[i + 1]
+    r1, r2 = rates[i], rates[i + 1]
+
+    if r1 == r2:
+        intersection_x = x1
+    else:
+        intersection_x = x1 + ((payment_rate - r1) / (r2 - r1) * (x2 - x1))
+
+    intersection_allocation = np.interp(
+        intersection_x,
+        x,
+        allocation,
     )
 
-    x_rel = (intersection_x - ax.get_xlim()[0]) / (ax.get_xlim()[1] - ax.get_xlim()[0])
-    y_rel = (intersection_y1 - ax.get_ylim()[0]) / (ax.get_ylim()[1] - ax.get_ylim()[0])
+    # ------------------------------------------------------------
+    # Mark intersection
+    # ------------------------------------------------------------
+    ax1.axvline(
+        intersection_x,
+        linestyle=":",
+        linewidth=1.2,
+        alpha=0.7,
+    )
 
-    fig.text(
-        x_rel + 0.02,
-        y_rel + 0.02,
-        textstr,
-        fontsize=11,
+    ax1.scatter(
+        intersection_x,
+        intersection_allocation,
+        s=45,
+        zorder=5,
+    )
+
+    ax2.scatter(
+        intersection_x,
+        payment_rate,
+        s=45,
+        zorder=5,
+    )
+
+    # ------------------------------------------------------------
+    # Annotation
+    # ------------------------------------------------------------
+    text = (
+        f"{'Támogatás hektáronként:':<27}"
+        f"{intersection_x:>8.2f} EUR/ha\n"
+        f"{'Szükséges keret:':<27}"
+        f"{intersection_allocation:>8.2f} millió EUR\n"
+        f"{'Kifizetési arány:':<27}"
+        f"{payment_rate:>8.2f} EUR/ha"
+    )
+
+    ax1.annotate(
+        text,
+        xy=(intersection_x, intersection_allocation),
+        xytext=(25, 25),
+        textcoords="offset points",
+        fontsize=10,
+        family="monospace",
         ha="left",
         va="bottom",
-        family="monospace",
         bbox={
             "boxstyle": "round,pad=0.5",
             "facecolor": "white",
             "edgecolor": "black",
-            "linewidth": 1.2,
             "alpha": 0.95,
         },
-        zorder=50,
+        arrowprops={
+            "arrowstyle": "->",
+        },
     )
 
-    ax.grid(color="lightgrey", linestyle="--", linewidth=0.7, alpha=0.7)
-    plt.title(
-        "Impact of Support Rate on Total Allocation (Fixed Payment Rate Highlighted)",
-        fontsize=14,
+    # ------------------------------------------------------------
+    # Labels
+    # ------------------------------------------------------------
+    ax1.set_xlabel(
+        "Támogatás hektáronként (EUR/ha)",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax1.set_ylabel(
+        "Szükséges keret (millió EUR)",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax2.set_ylabel(
+        "Kifizetési arány (EUR/ha)",
+        fontsize=12,
         fontweight="bold",
     )
 
-    fig.patch.set_facecolor("white")
-    ax.set_facecolor("white")
+    ax1.set_title(
+        "A támogatási egységösszeg és a szükséges keret kapcsolata",
+        fontsize=14,
+        fontweight="bold",
+        pad=12,
+    )
 
-    plt.tight_layout()
+    ax1.grid(
+        axis="both",
+        linestyle="--",
+        linewidth=0.7,
+        alpha=0.5,
+    )
+
+    # Combined legend
+    lines = [line1, line2, fixed_line]
+    ax1.legend(
+        lines,
+        [line.get_label() for line in lines],
+        loc="best",
+        frameon=True,
+    )
+
+    fig.tight_layout()
     plt.show()
 
 
@@ -1552,3 +1960,132 @@ def plot_support_summary_by_area_class_01(
     plt.savefig(f"output/abra_osszetett_{allocation / 1e6:.1f}.png", dpi=300)
     plt.show()
     return data_with_subs
+
+
+def plot_cis_claimant_distribution_by_area_class(
+    data: pd.DataFrame,
+    param: str,
+) -> None:
+    dict_param = {
+        "count_tk_tejhasznu_tehen": "Termeléshez kötött támogatás - Tejhasznú igénylők",
+        "count_tk_anyajuh": "Termeléshez kötött támogatás - anyajuh igénylők",
+        "count_tk_hizottbika": "Termeléshez kötött támogatás - hízottbika igénylők",
+        "count_tk_anyatehen": "Termeléshez kötött támogatás - anyatehén igénylők",
+        "area_tk_cukorrepa": "Termeléshez kötött támogatás - cukorrépa igénylők",
+        "area_tk_ipari_zoldsegnoveny": "Termeléshez kötött támogatás - ipari zöldségnövény igénylők",
+        "area_tk_zoldsegnoveny": "Termeléshez kötött támogatás - zöldségnövény igénylők",
+        "area_tk_extenziv_gyumolcs": "Termeléshez kötött támogatás - extenzív gyümölcs igénylők",
+        "area_tk_intenziv_gyumolcs": "Termeléshez kötött támogatás - intenzív gyümölcs igénylők",
+        "area_tk_szemes_feherjenoveny": "Termeléshez kötött támogatás - szemes fehérjenövény igénylők",
+    }
+    mask = data[param] > 0
+    share = data[mask].groupby("area_class", observed=False).size() / mask.sum() * 100
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+
+    _, ax = plt.subplots(figsize=(8, 5))
+
+    colors = plt.cm.Blues(np.linspace(0.2, 0.9, len(share)))
+    bars = []
+    for i, (cat, v) in enumerate(zip(share.index, share.values)):
+        if cat == "Nincs mezőgazdasági területe":
+            bar = ax.bar(
+                cat,
+                v,
+                color="lightgrey",
+                edgecolor="black",
+                hatch="//",  # csíkozás
+            )
+        else:
+            bar = ax.bar(
+                cat,
+                v,
+                color=colors[i],
+                edgecolor="black",
+            )
+        bars.append(bar[0])
+
+    ax.set_ylabel("Üzemszám arány (%)")
+    ax.set_title(
+        f"{dict_param[param]} százalékos megoszlása\nbirtokméret kategóriák szerint"
+    )
+    plt.xticks(rotation=45)
+
+    for bar, v in zip(bars, share.values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            f"{v:.1f}%",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
+        )
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_cis_quantity_distribution_by_area_class(
+    data: pd.DataFrame,
+    param: str,
+) -> None:
+    dict_param = {
+        "count_tk_tejhasznu_tehen": "Termeléshez kötött támogatás - Tejhasznú tehénállomány",
+        "count_tk_anyajuh": "Termeléshez kötött támogatás - anyajuh állomány",
+        "count_tk_hizottbika": "Termeléshez kötött támogatás - hízottbika állomány",
+        "count_tk_anyatehen": "Termeléshez kötött támogatás - anyatehén állomány",
+        "area_tk_cukorrepa": "Termeléshez kötött támogatás - cukorrépa terület",
+        "area_tk_ipari_zoldsegnoveny": "Termeléshez kötött támogatás - ipari zöldségnövény terület",
+        "area_tk_zoldsegnoveny": "Termeléshez kötött támogatás - zöldségnövény terület",
+        "area_tk_extenziv_gyumolcs": "Termeléshez kötött támogatás - extenzív gyümölcsterület",
+        "area_tk_intenziv_gyumolcs": "Termeléshez kötött támogatás - intenzív gyümölcsterület",
+        "area_tk_szemes_feherjenoveny": "Termeléshez kötött támogatás - szemes fehérjenövény terület",
+    }
+
+    total = data[param].sum()
+    share = data.groupby("area_class", observed=False)[param].sum() / total * 100
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+
+    _, ax = plt.subplots(figsize=(8, 5))
+
+    colors = plt.cm.Blues(np.linspace(0.2, 0.9, len(share)))
+    bars = []
+    for i, (cat, v) in enumerate(zip(share.index, share.values)):
+        if cat == "Nincs mezőgazdasági területe":
+            bar = ax.bar(
+                cat,
+                v,
+                color="lightgrey",
+                edgecolor="black",
+                hatch="//",  # csíkozás
+            )
+        else:
+            bar = ax.bar(
+                cat,
+                v,
+                color=colors[i],
+                edgecolor="black",
+            )
+        bars.append(bar[0])
+
+    ax.set_ylabel("Arány (%)")
+    ax.set_title(
+        f"{dict_param[param]} százalékos megoszlása\nbirtokméret kategóriák szerint"
+    )
+    plt.xticks(rotation=45)
+
+    for bar, v in zip(bars, share.values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            f"{v:.1f}%",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
+        )
+
+    plt.tight_layout()
+    plt.show()

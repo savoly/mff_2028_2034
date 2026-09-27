@@ -10,6 +10,11 @@ from mff.utils import c_round
 
 Number = float | int
 
+PAYMENTS = {
+    "BISS_PER_HA_2024": 148.38544462390817,
+    "YFS_PER_HA_2024": 93.56369030533665,
+}
+
 
 def query_mepar_data(engine) -> pd.DataFrame:
     QUERY = """
@@ -56,7 +61,7 @@ def generate_data_for_gams(base_year: int, engine: Engine) -> None:
         ORDER BY area_biss_criss
     """)
     data = pd.read_sql_query(sql, con=engine, params={"base_year": base_year})
-    data.to_csv("input/base_2024.csv", index=False)
+    data.to_csv(f"input/base_{base_year}.csv", index=False)
 
 
 def compute_dabis_support_summary(data: pd.DataFrame) -> pd.DataFrame:
@@ -102,22 +107,36 @@ def calculate_flat_rate(
 
 
 def find_flat_rate(
-    data: pd.DataFrame, budget: float, yfs: float, redist_per_ha: tuple[float, float]
+    data: pd.DataFrame,
+    budget: float,
+    yfs_per_ha: float,
+    redist_per_ha: tuple[float, float],
 ) -> RootResults:
-    return root_scalar(
-        lambda x: calculate_flat_rate(data, budget, x, yfs, redist_per_ha),
-        bracket=(100.0, 500.0),
-        method="brentq",
-    )
+    area = data["area_biss_criss"].to_numpy()
+    yfs_area = data["area_yfs_cur_eligible"].to_numpy()
+    redist = cal_redist_vec(area, redist_per_ha)
+
+    def residual(flat_rate: float) -> float:
+        uncapped = flat_rate * area + yfs_per_ha * yfs_area + redist
+        capped = apply_reductions_vec(pd.Series(uncapped))
+        return budget - capped.sum()
+
+    return root_scalar(residual, bracket=(100.0, 500.0), method="brentq")
 
 
 def find_budget(
-    data: pd.DataFrame, flat_rate: float, yfs: float, redist_per_ha: tuple[float, float]
-) -> RootResults:
-    return root_scalar(
-        lambda x: calculate_flat_rate(data, x, flat_rate, yfs, redist_per_ha),
-        bracket=(1e6, 1.5 * 1e9),
-        method="brentq",
+    data: pd.DataFrame,
+    flat_rate: float,
+    yfs: float,
+    redist_per_ha: tuple[float, float],
+) -> float:
+    return float(
+        compute_capped_subsidies(
+            data,
+            flat_rate,
+            yfs,
+            redist_per_ha,
+        )["subs_capped"].sum()
     )
 
 
@@ -131,6 +150,41 @@ def find_cur_new_equal_root(
 
     sol = root_scalar(f, bracket=(1e-3, 4e9), method="brentq")
     return sol.root
+
+
+def find_cur_new_equal_roots(
+    eur_per_ha: float,
+    redist_per_ha: tuple[float, float],
+    yfs_per_ha: float,
+    x_min: float = 1e-3,
+    x_max: float = 10_000,
+    n: int = 10_000,
+) -> list[float]:
+    def f(x: float) -> float:
+        return apply_reductions(
+            eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha)
+        ) - compute_current_support(x, yfs_per_ha)
+
+    x_values = np.geomspace(x_min, x_max, n)
+    f_values = np.array([f(x) for x in x_values])
+
+    roots = []
+
+    for x1, x2, y1, y2 in zip(
+        x_values[:-1],
+        x_values[1:],
+        f_values[:-1],
+        f_values[1:],
+    ):
+        if y1 * y2 < 0:
+            root = root_scalar(
+                f,
+                bracket=(x1, x2),
+                method="brentq",
+            ).root
+            roots.append(root)
+
+    return roots
 
 
 def apply_reductions(amount: float) -> float:
@@ -315,49 +369,37 @@ def generate_extended_base_data(base_year: int, engine: Engine) -> pd.DataFrame:
         ].tolist()
         data.loc[~data["regszam"].isin(yfs_eligible), "area_yfs"] = 0
     data["area_yfs_cur_eligible"] = np.minimum(data["area_yfs"], 300)
-    data["subs_biss"] = data["area_biss_criss"] * 148.38544462390817
+    data["subs_biss"] = data["area_biss_criss"] * PAYMENTS["BISS_PER_HA_2024"]
     data["subs_redist"] = cal_redist_vec(data["area_biss_criss"])
-    data["subs_yfs"] = data["area_yfs_cur_eligible"] * 93.56369030533665
+    data["subs_yfs"] = data["area_yfs_cur_eligible"] * PAYMENTS["YFS_PER_HA_2024"]
 
     data.to_parquet(f"input/data_extended_{base_year}.parquet")
     return data
 
 
-def generate_base_data(base_year: int, engine: Engine) -> pd.DataFrame:
-    sql = text("""
-        SELECT regszam,
-               SUM(terulet_elf) AS area_biss_criss,
-               SUM(CASE WHEN fiatal_mgi_termelo = 1 THEN terulet_elf ELSE 0 END) AS area_yfs
-        FROM ek_adatok.tera
-        WHERE ev = :base_year AND teruletalapu_alaptamogatas = 1 AND tam_nem_ig = 0 AND terulet_elf > 0
-        GROUP BY regszam
-    """)
-    data = pd.read_sql(sql, con=engine, params={"base_year": base_year})
-
-    if base_year == 2024:
-        yfs_data = pd.read_excel(
-            "input/2024EK Feldolgozás bizonylatok 2023-2027 Területalapú kérelem soros analitika DP03-BISS.xlsx",
-            engine="calamine",
-        )
-        yfs_eligible = yfs_data[yfs_data["Jóváhagyott támogatás (Ft)"] > 0][
-            "Ügyfél azonosító"
-        ].tolist()
-        data.loc[~data["regszam"].isin(yfs_eligible), "area_yfs"] = 0
-    data["area_yfs_cur_eligible"] = np.minimum(data["area_yfs"], 300)
-    data["subs_biss"] = data["area_biss_criss"] * 148.38544462390817
-    data["subs_redist"] = cal_redist_vec(data["area_biss_criss"])
-    data["subs_yfs"] = data["area_yfs_cur_eligible"] * 93.56369030533665
-
-    data.to_parquet(f"input/data_{base_year}.parquet")
-    return data
-
-
-def read_base_data(base_year: int) -> pd.DataFrame:
-    return pd.read_parquet(f"input/data_{base_year}.parquet")
-
-
 def read_extended_base_data(base_year: int) -> pd.DataFrame:
     return pd.read_parquet(f"input/data_extended_{base_year}.parquet")
+
+
+def prepare_data(year: int) -> pd.DataFrame:
+    data = read_extended_base_data(year)
+
+    bins = [0.1, 10, 150, 300, 1200, float("inf")]
+    labels = generate_labels_from_bins(bins)
+
+    data["area_class"] = pd.cut(
+        data["area_biss_criss"], bins=bins, labels=labels, right=False
+    )
+
+    if "Nincs mezőgazdasági területe" not in data["area_class"].cat.categories:
+        data["area_class"] = data["area_class"].cat.add_categories(
+            ["Nincs mezőgazdasági területe"]
+        )
+
+    data.loc[data["area_biss_criss"].eq(0), "area_class"] = (
+        "Nincs mezőgazdasági területe"
+    )
+    return data
 
 
 def compute_capped_subsidies(
@@ -411,7 +453,12 @@ def analyze_by_area_categories(
 
 
 def _fmt(x: float, rounding: int) -> str:
-    return str(int(x)) if float(x).is_integer() else str(int(c_round(x, rounding)))
+    value = c_round(x, rounding)
+
+    if float(value).is_integer():
+        return str(int(value))
+
+    return f"{value:.{rounding}f}"
 
 
 def generate_labels_from_bins(bins: list[float], rounding: int = 0) -> list[str]:
@@ -491,10 +538,16 @@ def summarize_farms_by_area_categories(
     return data[cols]
 
 
-def compute_current_support(hectares: float, yfs: float) -> float:
-    yfs = 93.56369030533665 if yfs != 0 else 0
+def compute_current_support(
+    hectares: float,
+    is_young_farmer: bool = True,
+) -> float:
+    yfs_per_ha = PAYMENTS["YFS_PER_HA_2024"] if is_young_farmer else 0.0
+
     return (
-        148.38544462390817 * hectares + cal_redist(hectares) + yfs * min(hectares, 300)
+        PAYMENTS["BISS_PER_HA_2024"] * hectares
+        + cal_redist(hectares)
+        + yfs_per_ha * min(hectares, 300)
     )
 
 
@@ -655,17 +708,18 @@ def create_data_for_hist(
         "subs_tk_anyajuh",
     ]
 
+    cis_subs = data_with_subs[cis_columns].fillna(0).sum(axis=1)
+
     data_with_subs["subs_cur"] = (
-        data_with_subs["subs_biss"]
-        + data_with_subs["subs_redist"]
-        + data_with_subs["subs_yfs"]
-        + data_with_subs[cis_columns].fillna(0).sum(axis=1)
+        data_with_subs["subs_biss"].fillna(0)
+        + data_with_subs["subs_redist"].fillna(0)
+        + data_with_subs["subs_yfs"].fillna(0)
+        + cis_subs
         + data_with_subs["subs_aop"].fillna(0)
         + data_with_subs["subs_vp_akg_2021"].fillna(0)
     )
 
-    data_with_subs["subs_capped"] += (
-        cis_ratio * data_with_subs[cis_columns].fillna(0).sum(axis=1)
-        + flat_rate * data_with_subs["area_aop"]
-    )
+    data_with_subs["subs_capped"] += cis_ratio * cis_subs + flat_rate * data_with_subs[
+        "area_aop"
+    ].fillna(0)
     return data_with_subs

@@ -1,7 +1,11 @@
 import pandas as pd
 import streamlit as st
 
-from mff.new_cap import compute_dabis_support_summary, find_flat_rate, read_base_data
+from mff.new_cap import (
+    compute_dabis_support_summary,
+    find_flat_rate,
+    read_extended_base_data,
+)
 from mff.utils import c_round
 
 st.set_page_config(page_title="MFF számítások", layout="wide")
@@ -9,7 +13,7 @@ st.set_page_config(page_title="MFF számítások", layout="wide")
 
 @st.cache_data
 def load_data(year: int) -> pd.DataFrame:
-    return read_base_data(year)
+    return read_extended_base_data(year)
 
 
 def format_with_space(n: float) -> str:
