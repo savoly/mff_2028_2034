@@ -1,5 +1,6 @@
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import matplotlib.pyplot as plt
@@ -11,40 +12,38 @@ from mff.new_cap import apply_reductions, cal_redist
 
 
 def get_data(engine: Engine, year: int) -> pd.DataFrame:
-    with open(r"sql\fadn_dabis.sql", encoding="utf-8") as f:
-        sql = f.read()
+    sql = Path("sql/fadn_dabis.sql").read_text(encoding="utf-8")
 
     data = pd.read_sql(sql, con=engine)
-    data = data[data["ev"].eq(year)]
-    return data
+    return data.loc[data["ev"].eq(year)]
 
 
 NOT_DISPLAYED_COLS: dict[str, str] = {
     "n_farms": "Üzemek száma - súlyozatlan (db)",
     "n_farms_weighted": "Üzemek száma - súlyozott (db)",
-    "n_farms_current_neg": "Vesztéseges üzemek száma - tényadat - súlyozatlan (db)",
+    "n_farms_current_neg": "Veszteséges üzemek száma - tényadat - súlyozatlan (db)",
     "n_farms_current_pos": "Nyereséges üzemek száma - tényadat - súlyozatlan (db)",
-    "n_farms_scenario_neg": "Vesztéseges üzemek száma - szcenárió - súlyozatlan (db)",
+    "n_farms_scenario_neg": "Veszteséges üzemek száma - szcenárió - súlyozatlan (db)",
     "n_farms_scenario_pos": "Nyereséges üzemek száma - szcenárió - súlyozatlan (db)",
-    "n_farms_current_neg_weighted": "Vesztéseges üzemek száma - tényadat - súlyozott (db)",
+    "n_farms_current_neg_weighted": "Veszteséges üzemek száma - tényadat - súlyozott (db)",
     "n_farms_current_pos_weighted": "Nyereséges üzemek száma - tényadat - súlyozott (db)",
-    "n_farms_scenario_neg_weighted": "Vesztéseges üzemek száma - szcenárió - súlyozott (db)",
+    "n_farms_scenario_neg_weighted": "Veszteséges üzemek száma - szcenárió - súlyozott (db)",
     "n_farms_scenario_pos_weighted": "Nyereséges üzemek száma - szcenárió - súlyozott (db)",
 }
 
 DISPLAY_COLS: dict[str, str] = {
-    "n_farms_ratio_neg_current_non_weighted": "Vesztéseges üzemek aránya - tényadat - súlyozatlan (%)",
+    "n_farms_ratio_neg_current_non_weighted": "Veszteséges üzemek aránya - tényadat - súlyozatlan (%)",
     "n_farms_ratio_pos_current_non_weighted": "Nyereséges üzemek aránya - tényadat - súlyozatlan (%)",
-    "n_farms_ratio_neg_scenario_non_weighted": "Vesztéseges üzemek száma - szcenárió - súlyozatlan (%)",
+    "n_farms_ratio_neg_scenario_non_weighted": "Veszteséges üzemek száma - szcenárió - súlyozatlan (%)",
     "n_farms_ratio_pos_scenario_non_weighted": "Nyereséges üzemek aránya - szcenárió - súlyozatlan (%)",
-    "n_farms_ratio_neg_current_weighted": "Vesztéseges üzemek aránya - tényadat - súlyozott (%)",
+    "n_farms_ratio_neg_current_weighted": "Veszteséges üzemek aránya - tényadat - súlyozott (%)",
     "n_farms_ratio_pos_current_weighted": "Nyereséges üzemek aránya - tényadat - súlyozott (%)",
-    "n_farms_ratio_neg_scenario_weighted": "Vesztéseges üzemek száma - szcenárió - súlyozott (%)",
+    "n_farms_ratio_neg_scenario_weighted": "Veszteséges üzemek száma - szcenárió - súlyozott (%)",
     "n_farms_ratio_pos_scenario_weighted": "Nyereséges üzemek aránya - szcenárió - súlyozott (%)",
-    "n_farms_ratio_is_less_non_weighted": "EBIDTA-csökkenéses üzemek aránya - súlyozatlan (%)",
-    "n_farms_ratio_is_not_less_non_weighted": "EBIDTA-nem-csökkenés aránya száma - súlyozatlan (%)",
-    "n_farms_ratio_is_less_weighted": "EBIDTA-csökkenés üzemek aránya - súlyozott (%)",
-    "n_farms_ratio_is_not_less_weighted": "EBIDTA-nem-csökkenés aránya száma - súlyozott (%)",
+    "n_farms_ratio_is_less_non_weighted": "EBITDA-csökkenéses üzemek aránya - súlyozatlan (%)",
+    "n_farms_ratio_is_not_less_non_weighted": "EBITDA-nem-csökkenés aránya száma - súlyozatlan (%)",
+    "n_farms_ratio_is_less_weighted": "EBITDA-csökkenés üzemek aránya - súlyozott (%)",
+    "n_farms_ratio_is_not_less_weighted": "EBITDA-nem-csökkenés aránya száma - súlyozott (%)",
     "val_brutto_termelesi_ertek_ratio_weighted": "Bruttó termelési érték arány - súlyozott (%)",
     "val_brutto_termelesi_ertek_ratio_non_weighted": "Bruttó termelési érték arány - súlyozatlan (%)",
 }
@@ -152,8 +151,8 @@ def _prepare_flags_and_weights(tmp: pd.DataFrame, metric: str, md: str) -> pd.Da
     tmp = tmp.copy()
     tmp["weight"] = tmp["weights_ste"]
 
-    tmp["ebidta_arany"] = 100 * (tmp["ebitda_ft"] / tmp["ebitda_ft_dabis"] - 1)
-    tmp["weighted_ebidta_arany"] = 100 * tmp["ebidta_arany"] * tmp["weight"]
+    tmp["ebitda_arany"] = 100 * (tmp["ebitda_ft"] / tmp["ebitda_ft_dabis"] - 1)
+    tmp["weighted_ebitda_arany"] = 100 * tmp["ebitda_arany"] * tmp["weight"]
 
     tmp["brutto_termelesi_ertek_ft_wgt"] = (
         tmp["brutto_termelesi_ertek_ft"] * tmp["weight"]
