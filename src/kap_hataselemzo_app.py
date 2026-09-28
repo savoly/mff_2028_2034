@@ -31,7 +31,36 @@ from mff.plots import (
     plot_total,
 )
 
-st.set_page_config(page_title="KAP Hatáselemző", page_icon="🌾", layout="wide")
+
+def color_row(row):
+    value = row["Változás (%)"]
+
+    if pd.isna(value):
+        return [""] * len(row)
+
+    if value > 0:
+        color = "background-color: rgba(0, 128, 0, 0.06);"
+    elif value < 0:
+        color = "background-color: rgba(220, 0, 0, 0.05);"
+    else:
+        color = ""
+
+    return [color] * len(row)
+
+
+def color_change(value):
+    if pd.isna(value):
+        return ""
+
+    if value > 0:
+        return "background-color: rgba(0, 128, 0, 0.14);"
+    if value < 0:
+        return "background-color: rgba(220, 0, 0, 0.12);"
+
+    return ""
+
+
+st.set_page_config(page_title="KAP hatáselemző", page_icon="🌾", layout="wide")
 st.markdown(
     """
 <style>
@@ -121,7 +150,7 @@ with st.sidebar:
     st.header("Forgatókönyv")
     st.caption("A notebook induló értékei: 220 / 50 / (0, 0) €/ha")
     dabis = st.number_input(
-        "DABIS (€/ha)",
+        "DABIS általános (€/ha)",
         min_value=100.0,
         max_value=500.0,
         value=220.0,
@@ -129,7 +158,11 @@ with st.sidebar:
         key="dabis",
     )
     yfs = st.number_input(
-        "Fiatal gazda (€/ha)", min_value=0.0, max_value=200.0, value=50.0, step=5.0
+        "DABIS - fiatal gazda (€/ha)",
+        min_value=0.0,
+        max_value=200.0,
+        value=50.0,
+        step=5.0,
     )
     r1 = st.number_input(
         "Redisztribúció · 0–10 ha (€/ha)",
@@ -213,31 +246,62 @@ with farm_tab:
             )
         except ValueError as exc:
             st.warning(f"Az ábra ezekkel a paraméterekkel nem készíthető el: {exc}")
-    st.caption(
-        "Az ábrákat közvetlenül az mff.plots függvényei készítik; a számítási szabályok az mff.new_cap modulból származnak."
-    )
 
     with st.expander("Jellemző üzemméretek"):
-        areas = [5, 10, 50, 100, 150, 300, 500, 1200, 1500]
+        areas = np.array([5, 10, 50, 100, 150, 300, 500, 1200, 1500])
+
         examples = pd.DataFrame(
             {
                 "area_biss_criss": areas,
-                "area_yfs_cur_eligible": [
-                    min(x, 300) if is_young else 0 for x in areas
-                ],
+                "area_yfs_cur_eligible": np.minimum(areas, 300) if is_young else 0,
             }
         )
-        examples_new = compute_capped_subsidies(examples, dabis, yfs, redist)
-        current = [compute_current_support(x, is_young) for x in areas]
+
+        examples_new = compute_capped_subsidies(
+            examples,
+            dabis,
+            yfs,
+            redist,
+        )
+
         overview = pd.DataFrame(
             {
                 "Üzemméret (ha)": areas,
-                "Jelenlegi (€)": current,
+                "Jelenlegi (€)": [
+                    compute_current_support(area, is_young) for area in areas
+                ],
                 "Új (€)": examples_new["subs_capped"].to_numpy(),
             }
         )
+
         overview["Változás (€)"] = overview["Új (€)"] - overview["Jelenlegi (€)"]
-        st.dataframe(overview, hide_index=True, width="stretch")
+
+        overview["Változás (%)"] = (
+            100 * overview["Változás (€)"] / overview["Jelenlegi (€)"]
+        )
+
+        styled_overview = (
+            overview.style.format(
+                {
+                    "Üzemméret (ha)": lambda x: f"{x:,.0f}".replace(",", " "),
+                    "Jelenlegi (€)": lambda x: f"{x:,.0f} €".replace(",", " "),
+                    "Új (€)": lambda x: f"{x:,.0f} €".replace(",", " "),
+                    "Változás (€)": lambda x: f"{x:+,.0f} €".replace(",", " "),
+                    "Változás (%)": lambda x: f"{x:+.1f} %",
+                }
+            )
+            .apply(color_row, axis=1)
+            .map(
+                color_change,
+                subset=["Változás (%)"],
+            )
+        )
+
+        st.dataframe(
+            styled_overview,
+            hide_index=True,
+            width="stretch",
+        )
 
 with data_tab:
     st.subheader("2024-es üzemsoros állomány")
@@ -416,7 +480,3 @@ with rates_tab:
                 ),
                 width="stretch",
             )
-
-st.caption(
-    "Forrás: a csatolt new_cap_vs_current_cap notebook és az mff.new_cap / mff.plots modulok. A 2028–2034-es összegek forgatókönyvek, nem elfogadott szabályok."
-)
