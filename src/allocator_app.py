@@ -182,6 +182,129 @@ CIS_COMPONENTS = {
     "Anyajuh": ("count_tk_anyajuh", "állat"),
 }
 
+# 2024-es CIS referencia a read_extended_base_data(2024) állományhoz.
+# A `rate` értékek a megadott tk_* fajlagosok; ezek töltődnek be
+# alapértelmezett egységösszegként a felületen.
+CIS_REFERENCE = {
+    "Cukorrépa": {
+        "rate": 490.56,
+        "budget": 7_915_693.20,
+        "min": 424.52,
+        "max": 881.70,
+    },
+    "Szemes fehérjenövény": {
+        "rate": 130.02,
+        "budget": 15_962_772.76,
+        "min": 163.01,
+        "max": 302.73,
+    },
+    "Szálas fehérjenövény": {
+        "rate": 66.34,
+        "budget": 10_985_262.30,
+        "min": 44.92,
+        "max": 77.00,
+    },
+    "Extenzív gyümölcs": {
+        "rate": 199.75,
+        "budget": 6_063_331.33,
+        "min": 143.54,
+        "max": 191.39,
+    },
+    "Intenzív gyümölcs": {
+        "rate": 378.81,
+        "budget": 6_653_919.68,
+        "min": 280.11,
+        "max": 429.50,
+    },
+    "Ipari olajnövény": {
+        "rate": 121.58,
+        "budget": 740_499.63,
+        "min": 76.71,
+        "max": 142.47,
+    },
+    "Ipari zöldségnövény": {
+        "rate": 384.99,
+        "budget": 15_619_889.00,
+        "min": 260.44,
+        "max": 390.66,
+    },
+    "Zöldségnövény": {
+        "rate": 135.63,
+        "budget": 6_455_314.80,
+        "min": 180.92,
+        "max": 289.48,
+    },
+    "Rizs": {
+        "rate": 840.68,
+        "budget": 1_979_171.48,
+        "min": 582.75,
+        "max": 874.13,
+    },
+    "Hízott bika": {
+        "rate": 95.96,
+        "budget": 5_061_180.70,
+        "min": 40.76,
+        "max": 65.22,
+    },
+    "Anyatehén": {
+        "rate": 168.12,
+        "budget": 34_631_327.25,
+        "min": 111.96,
+        "max": 174.94,
+    },
+    "Tejhasznú tehén": {
+        "rate": 168.12,
+        "budget": 68_274_257.17,
+        "min": 237.74,
+        "max": 396.24,
+    },
+    "Anyajuh": {
+        "rate": 35.25,
+        "budget": 21_767_730.60,
+        "min": 24.16,
+        "max": 35.53,
+    },
+}
+
+CIS_CURRENT_EUR = 202_110_350.0
+CIS_CURRENT_M = CIS_CURRENT_EUR / 1_000_000
+
+
+# 2028–2034 baseline defaultok a feltöltött
+# MFF_2028-2034_Agrárköltségvetési_modell_2026-03-18_ver_01.xlsx alapján.
+# DABIS és CIS külön, a 2024-es üzemi / fajlagos logikából számolódik.
+# Az AEC egyetlen app-mezőben összevonja az AÖP 2028-as EU-részét
+# és a jelenlegi környezeti/klíma kötelezettségvállalások éves EU-átlagát.
+MODEL_DEFAULTS_M = {
+    "aec": 326.200216684,
+    "anc": 0.0,
+    "mandatory_req": 20.850387300,
+    "investment": 52.498636246,
+    "risk": 1.310862310,
+    "young_startup": 18.194521428,
+    "farm_relief": 0.0,
+    "leader": 16.461056032,
+    # Tudás/innováció = jelenlegi tudásmegosztás + EIP együttműködés.
+    "knowledge": 6.795749884,
+    # Területi/helyi együttműködés = együttműködések LEADER és EIP nélkül.
+    "territorial_coop": 3.017966218,
+    # 2028–2034, szcenárió 1. éves átlag.
+    "school_scheme": 5.965786000,
+    "sectoral_support": 46.44781983947153,
+    "crisis_payments": 0.0,
+}
+
+# A márciusi baseline társfinanszírozási feltételei.
+# Az AEC összevont értéke miatt itt súlyozott arányt használunk
+# (AÖP: 35%; AEK-II környezeti rész: 80%).
+COFIN_DEFAULTS = {
+    "aec": 0.72,
+    "anc": 0.80,
+    "investment": 0.80,
+    "risk": 0.80,
+    "young_startup": 0.80,
+}
+
 TRACKING_DEFAULTS = {
     "DABIS": 0.40,
     "YF top-up": 0.40,
@@ -349,40 +472,114 @@ with st.sidebar.expander("🌾 CAP design", expanded=True):
         "SFS átalány (€/gazdaság/év)",
         min_value=0,
         max_value=3_000,
-        value=1_500,
+        value=0,
         step=100,
     )
 
 with st.sidebar.expander("💶 Egyéb CAP borítékok", expanded=False):
+    st.caption(
+        "Default: 2026-03-18-as agrárköltségvetési modell baseline; "
+        "az AEC az AÖP + környezeti/klíma kötelezettségvállalások összevont EU-kerete."
+    )
     aec_eu_m = st.number_input(
         "AEC / környezet-klíma (M€/év)",
         min_value=0.0,
-        value=180.0,
-        step=10.0,
+        value=float(MODEL_DEFAULTS_M["aec"]),
+        step=1.0,
+        format="%.2f",
     )
     anc_eu_m = st.number_input(
         "ANC (M€/év)",
         min_value=0.0,
-        value=120.0,
-        step=10.0,
+        value=float(MODEL_DEFAULTS_M["anc"]),
+        step=1.0,
+        format="%.2f",
     )
     investment_eu_m = st.number_input(
         "Beruházás (M€/év)",
         min_value=0.0,
-        value=160.0,
-        step=10.0,
+        value=float(MODEL_DEFAULTS_M["investment"]),
+        step=1.0,
+        format="%.2f",
     )
     risk_eu_m = st.number_input(
         "Kockázatkezelés (M€/év)",
         min_value=0.0,
-        value=70.0,
-        step=10.0,
+        value=float(MODEL_DEFAULTS_M["risk"]),
+        step=1.0,
+        format="%.2f",
     )
     young_startup_eu_m = st.number_input(
-        "Fiatal gazda induló (M€/év)",
+        "Fiatal / új gazda, vidéki vállalkozás induló (M€/év)",
         min_value=0.0,
-        value=0.0,
-        step=5.0,
+        value=float(MODEL_DEFAULTS_M["young_startup"]),
+        step=1.0,
+        format="%.2f",
+    )
+
+with st.sidebar.expander("📚 További CAP-beavatkozások", expanded=False):
+    st.caption(
+        "A COM(2025) 565 Magyarországon alkalmazható Article 35(1) beavatkozásai "
+        "+ Article 38 válságkifizetés."
+    )
+
+    mandatory_req_eu_m = st.number_input(
+        "35(1)(e) Kötelező előírásokból eredő hátrányok (M€/év)",
+        min_value=0.0,
+        value=float(MODEL_DEFAULTS_M["mandatory_req"]),
+        step=1.0,
+        format="%.2f",
+    )
+    farm_relief_eu_m = st.number_input(
+        "35(1)(k) Gazdasághelyettesítési szolgáltatások (M€/év)",
+        min_value=0.0,
+        value=float(MODEL_DEFAULTS_M["farm_relief"]),
+        step=1.0,
+        format="%.2f",
+    )
+    leader_eu_m = st.number_input(
+        "35(1)(l) LEADER (M€/év)",
+        min_value=0.0,
+        value=float(MODEL_DEFAULTS_M["leader"]),
+        step=1.0,
+        format="%.2f",
+    )
+    knowledge_eu_m = st.number_input(
+        "35(1)(m) Tudásmegosztás és innováció (M€/év)",
+        min_value=0.0,
+        value=float(MODEL_DEFAULTS_M["knowledge"]),
+        step=1.0,
+        format="%.2f",
+    )
+    territorial_coop_eu_m = st.number_input(
+        "35(1)(n) Területi és helyi együttműködés (M€/év)",
+        min_value=0.0,
+        value=float(MODEL_DEFAULTS_M["territorial_coop"]),
+        step=1.0,
+        format="%.2f",
+    )
+
+    school_scheme_eu_m = st.number_input(
+        "35(1)(q) EU iskolaprogram (M€/év)",
+        min_value=0.0,
+        value=float(MODEL_DEFAULTS_M["school_scheme"]),
+        step=1.0,
+        format="%.2f",
+    )
+    sectoral_support_eu_m = st.number_input(
+        "35(1)(r) Egyes ágazatok támogatása (M€/év)",
+        min_value=0.0,
+        value=float(MODEL_DEFAULTS_M["sectoral_support"]),
+        step=1.0,
+        format="%.2f",
+    )
+    crisis_payments_eu_m = st.number_input(
+        "Art. 38 Válságkifizetés gazdálkodóknak (M€/év)",
+        min_value=0.0,
+        value=float(MODEL_DEFAULTS_M["crisis_payments"]),
+        step=1.0,
+        format="%.2f",
+        help="Természeti katasztrófa, kedvezőtlen éghajlati vagy katasztrofális esemény esetén.",
     )
 
 
@@ -398,16 +595,27 @@ with st.sidebar.expander("🔗 CIS", expanded=False):
         format_func=lambda value: f"{value:.0%}",
     )
 
-    st.caption("Az egységösszegek 0 esetén az adott komponens nem használ borítékot.")
+    st.caption(
+        f"2024-es CIS referencia: {eur_m(CIS_CURRENT_M)}. "
+        "Az egységösszegek alapértékei a megadott tk-fajlagosok."
+    )
+
     cis_rates = {}
 
     for label, (_, unit) in CIS_COMPONENTS.items():
+        ref = CIS_REFERENCE[label]
         cis_rates[label] = st.number_input(
             f"{label} (€/{unit})",
             min_value=0.0,
-            value=0.0,
-            step=10.0,
+            value=float(ref["rate"]),
+            step=1.0,
+            format="%.2f",
             key=f"cis_rate_{label}",
+            help=(
+                f"2024 referenciafajlagos: {ref['rate']:.2f} €/{unit}; "
+                f"referencia-boríték: {ref['budget'] / 1_000_000:.2f} M€; "
+                f"megadott min–max: {ref['min']:.2f}–{ref['max']:.2f} €/{unit}."
+            ),
         )
 
 
@@ -505,21 +713,24 @@ with st.sidebar.expander("🌱 Zöld tracking", expanded=False):
     )
 
 with st.sidebar.expander("🇭🇺 Magyar társfinanszírozás", expanded=False):
-    cofin_default = 0.30
+    st.caption(
+        "Baseline default: AÖP 35%, a többi modellezett VP-tétel 80%; "
+        "az összevont AEC-hez súlyozott ~72%-os magyar rész tartozik."
+    )
 
     aec_nat_share = st.slider(
         "AEC magyar rész",
         0.0,
         0.80,
-        cofin_default,
-        0.05,
+        COFIN_DEFAULTS["aec"],
+        0.01,
         format="%.2f",
     )
     anc_nat_share = st.slider(
         "ANC magyar rész",
         0.0,
         0.80,
-        cofin_default,
+        COFIN_DEFAULTS["anc"],
         0.05,
         format="%.2f",
     )
@@ -527,7 +738,7 @@ with st.sidebar.expander("🇭🇺 Magyar társfinanszírozás", expanded=False)
         "Beruházás magyar rész",
         0.0,
         0.80,
-        cofin_default,
+        COFIN_DEFAULTS["investment"],
         0.05,
         format="%.2f",
     )
@@ -535,7 +746,7 @@ with st.sidebar.expander("🇭🇺 Magyar társfinanszírozás", expanded=False)
         "Kockázatkezelés magyar rész",
         0.0,
         0.80,
-        cofin_default,
+        COFIN_DEFAULTS["risk"],
         0.05,
         format="%.2f",
     )
@@ -543,7 +754,7 @@ with st.sidebar.expander("🇭🇺 Magyar társfinanszírozás", expanded=False)
         "Fiatal gazda induló magyar rész",
         0.0,
         0.80,
-        cofin_default,
+        COFIN_DEFAULTS["young_startup"],
         0.05,
         format="%.2f",
     )
@@ -578,35 +789,59 @@ for label, (column, unit) in CIS_COMPONENTS.items():
     rate = cis_rates[label]
     amount_m = quantity * rate / 1_000_000
 
+    ref = CIS_REFERENCE[label]
+
     cis_rows.append(
         {
             "CIS komponens": label,
             "Jogosult mennyiség": quantity,
             "Egység": unit,
             "Egységösszeg (€)": rate,
+            "2024 referencia (€)": ref["rate"],
+            "Referencia-boríték (M€)": ref["budget"] / 1_000_000,
             "Boríték (M€)": amount_m,
         }
     )
 
 cis_table = pd.DataFrame(cis_rows)
 cis_budget_m = cis_table["Boríték (M€)"].sum()
+cis_reference_delta_m = cis_budget_m - CIS_CURRENT_M
 
-cis_reference_m = dabis_paid_m + aec_eu_m + sfs_budget_m
+cis_reference_m = dabis_paid_m + young_budget_m + aec_eu_m + sfs_budget_m
 cis_max_m = cis_alpha * cis_reference_m
 cis_headroom_m = cis_max_m - cis_budget_m
 
-cap_annual_eu_m = (
+# Article 35(1)(a)–(k) és (r): ezek számítanak a CAP income-support minimumhoz.
+# A jelenlegi YF top-up a DABIS egyik modellezett alkomponenseként szerepel.
+cap_income_support_annual_eu_m = (
     dabis_paid_m
     + young_budget_m
-    + sfs_budget_m
     + cis_budget_m
-    + aec_eu_m
     + anc_eu_m
-    + investment_eu_m
+    + mandatory_req_eu_m
+    + aec_eu_m
+    + sfs_budget_m
     + risk_eu_m
+    + investment_eu_m
     + young_startup_eu_m
+    + farm_relief_eu_m
+    + sectoral_support_eu_m
 )
 
+# Article 35(1)(l)–(q) + Article 38: CAP, de nem része az Annex XVIII
+# szerinti ring-fenced CAP income-support minimumnak.
+cap_non_ring_annual_eu_m = (
+    leader_eu_m
+    + knowledge_eu_m
+    + territorial_coop_eu_m
+    + school_scheme_eu_m
+    + crisis_payments_eu_m
+)
+
+cap_annual_eu_m = cap_income_support_annual_eu_m + cap_non_ring_annual_eu_m
+
+cap_income_support_7y_bn = cap_income_support_annual_eu_m * 7 / 1_000
+cap_non_ring_7y_bn = cap_non_ring_annual_eu_m * 7 / 1_000
 cap_7y_eu_bn = cap_annual_eu_m * 7 / 1_000
 
 
@@ -618,14 +853,18 @@ general_allocation_bn = nrpp_total_bn - migration_bn - scf_bn
 
 initial_non_ring_bn = general_allocation_bn - cap_min_bn - ldr_min_bn
 
-cap_gap_bn = max(cap_min_bn - cap_7y_eu_bn, 0.0)
-cap_extra_bn = max(cap_7y_eu_bn - cap_min_bn, 0.0)
+cap_gap_bn = max(cap_min_bn - cap_income_support_7y_bn, 0.0)
+cap_extra_bn = max(cap_income_support_7y_bn - cap_min_bn, 0.0)
 
 ldr_gap_bn = max(ldr_min_bn - ldr_planned_bn, 0.0)
 ldr_extra_bn = max(ldr_planned_bn - ldr_min_bn, 0.0)
 
 non_ring_remaining_bn = (
-    initial_non_ring_bn - cap_extra_bn - ldr_extra_bn - other_flexible_use_bn
+    initial_non_ring_bn
+    - cap_extra_bn
+    - cap_non_ring_7y_bn
+    - ldr_extra_bn
+    - other_flexible_use_bn
 )
 
 ring_valid = (
@@ -718,36 +957,143 @@ nrpp_green_gap_bn = nrpp_green_required_bn - nrpp_green_total_bn
 # ============================================================
 
 allocation_table = pd.DataFrame(
-    {
-        "Intézkedés": [
-            "DABIS",
-            "YF top-up",
-            "SFS",
-            "CIS",
-            "AEC",
-            "ANC",
-            "Beruházás",
-            "Kockázatkezelés",
-            "Fiatal gazda induló",
-        ],
-        "M€/év": [
-            dabis_paid_m,
-            young_budget_m,
-            sfs_budget_m,
-            cis_budget_m,
-            aec_eu_m,
-            anc_eu_m,
-            investment_eu_m,
-            risk_eu_m,
-            young_startup_eu_m,
-        ],
-    }
+    [
+        {
+            "Cikk": "35(1)(a)",
+            "Rövid név": "DABIS",
+            "Intézkedés": "Degresszív területalapú jövedelemtámogatás",
+            "M€/év": dabis_paid_m + young_budget_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "35(1)(b)",
+            "Rövid név": "CIS",
+            "Intézkedés": "Termeléshez kötött jövedelemtámogatás",
+            "M€/év": cis_budget_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "35(1)(d)",
+            "Rövid név": "ANC",
+            "Intézkedés": "Természeti és egyéb területspecifikus hátrányok",
+            "M€/év": anc_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "35(1)(e)",
+            "Rövid név": "Kötelező hátrány",
+            "Intézkedés": "Kötelező előírásokból eredő hátrányok",
+            "M€/év": mandatory_req_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "35(1)(f)",
+            "Rövid név": "AEC",
+            "Intézkedés": "Agrár-környezetvédelmi és éghajlat-politikai intézkedések",
+            "M€/év": aec_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "35(1)(g)",
+            "Rövid név": "SFS",
+            "Intézkedés": "Kisgazdaságok támogatása",
+            "M€/év": sfs_budget_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "35(1)(h)",
+            "Rövid név": "Kockázat",
+            "Intézkedés": "Kockázatkezelési eszközök",
+            "M€/év": risk_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "35(1)(i)",
+            "Rövid név": "Beruházás",
+            "Intézkedés": "Beruházások gazdálkodóknak és erdőgazdálkodóknak",
+            "M€/év": investment_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "35(1)(j)",
+            "Rövid név": "Induló",
+            "Intézkedés": "Fiatal/új gazdák, vidéki vállalkozások és kisgazdaságok indulása/fejlesztése",
+            "M€/év": young_startup_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "35(1)(k)",
+            "Rövid név": "Helyettesítés",
+            "Intézkedés": "Gazdasághelyettesítési szolgáltatások",
+            "M€/év": farm_relief_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "35(1)(l)",
+            "Rövid név": "LEADER",
+            "Intézkedés": "LEADER",
+            "M€/év": leader_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "nem",
+        },
+        {
+            "Cikk": "35(1)(m)",
+            "Rövid név": "Tudás/innováció",
+            "Intézkedés": "Tudásmegosztás és innováció a mezőgazdaságban, erdészetben és vidéken",
+            "M€/év": knowledge_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "nem",
+        },
+        {
+            "Cikk": "35(1)(n)",
+            "Rövid név": "Területi együttm.",
+            "Intézkedés": "Területi és helyi együttműködési kezdeményezések",
+            "M€/év": territorial_coop_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "nem",
+        },
+        {
+            "Cikk": "35(1)(q)",
+            "Rövid név": "Iskolaprogram",
+            "Intézkedés": "EU iskolaprogram",
+            "M€/év": school_scheme_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "nem",
+        },
+        {
+            "Cikk": "35(1)(r)",
+            "Rövid név": "Ágazati",
+            "Intézkedés": "Egyes ágazatok támogatása",
+            "M€/év": sectoral_support_eu_m,
+            "HU státusz": "✓ alkalmazható",
+            "CAP minimumba": "igen",
+        },
+        {
+            "Cikk": "Art. 38",
+            "Rövid név": "Válságkifizetés",
+            "Intézkedés": "Válságkifizetés gazdálkodóknak",
+            "M€/év": crisis_payments_eu_m,
+            "HU státusz": "✓ feltételes",
+            "CAP minimumba": "nem",
+        },
+    ]
 )
 
 ring_table = pd.DataFrame(
     {
         "Blokk": [
-            "CAP",
+            "CAP income support minimum",
+            "CAP egyéb / non-ring",
             "Kevésbé fejlett régiók",
             "Migration / Security",
             "Social Climate Fund",
@@ -755,13 +1101,15 @@ ring_table = pd.DataFrame(
         ],
         "Minimum / earmark (mrd €)": [
             cap_min_bn,
+            0.0,
             ldr_min_bn,
             migration_bn,
             scf_bn,
             initial_non_ring_bn,
         ],
         "Modellezett / tervezett (mrd €)": [
-            cap_7y_eu_bn,
+            cap_income_support_7y_bn,
+            cap_non_ring_7y_bn,
             ldr_planned_bn,
             migration_bn,
             scf_bn,
@@ -778,9 +1126,9 @@ ring_table = pd.DataFrame(
 top1, top2, top3, top4, top5 = st.columns(5)
 
 top1.metric(
-    "CAP 2028–2034",
+    "CAP összesen 2028–2034",
     eur_bn(cap_7y_eu_bn),
-    delta=signed_bn(cap_7y_eu_bn - cap_min_bn),
+    delta=f"income support: {signed_bn(cap_income_support_7y_bn - cap_min_bn)}",
 )
 
 top2.metric(
@@ -882,9 +1230,9 @@ with tab_overview:
     with left:
         plot_alloc = allocation_table.sort_values("M€/év")
 
-        fig, ax = plt.subplots(figsize=(10, 5.2))
+        fig, ax = plt.subplots(figsize=(10, 8.2))
         ax.barh(
-            plot_alloc["Intézkedés"],
+            plot_alloc["Rövid név"],
             plot_alloc["M€/év"],
         )
         ax.set_xlabel("EU-forrás (M€/év)")
@@ -901,8 +1249,9 @@ with tab_overview:
                 "Mutató": [
                     "NRPP összesen",
                     "General allocation",
-                    "CAP minimum",
-                    "Modellezett CAP",
+                    "CAP income support minimum",
+                    "Modellezett CAP income support",
+                    "Modellezett CAP összesen",
                     "LDR minimum",
                     "Kezdeti non-ring-fenced",
                     "Szabad maradvány",
@@ -911,6 +1260,7 @@ with tab_overview:
                     nrpp_total_bn,
                     general_allocation_bn,
                     cap_min_bn,
+                    cap_income_support_7y_bn,
                     cap_7y_eu_bn,
                     ldr_min_bn,
                     initial_non_ring_bn,
@@ -960,7 +1310,12 @@ with tab_cap:
     c2.metric("Elvonás", eur_m(dabis_reduction_m))
     c3.metric("YF top-up", eur_m(young_budget_m))
     c4.metric("SFS", eur_m(sfs_budget_m))
-    c5.metric("CIS", eur_m(cis_budget_m))
+    c5.metric(
+        "CIS",
+        eur_m(cis_budget_m),
+        delta=f"2024 ref.: {eur_m(CIS_CURRENT_M)}",
+        delta_color="off",
+    )
 
     st.caption(
         f"SFS: {sfs_farms:,} gazdaság a ≤ {sfs_max_area:.0f} ha "
@@ -970,7 +1325,7 @@ with tab_cap:
     cap_left, cap_right = st.columns([1.2, 1])
 
     with cap_left:
-        st.markdown("#### Éves CAP-allokáció")
+        st.markdown("#### Éves CAP-allokáció – HU-ban alkalmazható beavatkozások")
         st.dataframe(
             allocation_table.style.format({"M€/év": "{:,.1f}"}),
             hide_index=True,
@@ -980,10 +1335,11 @@ with tab_cap:
     with cap_right:
         st.markdown("#### CAP minimum")
         st.metric(
-            "CAP EU-forrás / 2028–2034",
-            eur_bn(cap_7y_eu_bn),
-            delta=signed_bn(cap_7y_eu_bn - cap_min_bn),
+            "CAP income support / 2028–2034",
+            eur_bn(cap_income_support_7y_bn),
+            delta=signed_bn(cap_income_support_7y_bn - cap_min_bn),
         )
+        st.caption(f"Teljes modellezett CAP: {eur_bn(cap_7y_eu_bn)}")
 
         st.metric(
             "CIS plafon",
@@ -1103,9 +1459,9 @@ with tab_ring:
         st.markdown(
             """
             <div class="small-muted">
-            A CAP és az LDR itt minimumként viselkedik.
-            A minimum feletti többlet a szabad/non-ring-fenced
-            mozgásteret fogyasztja.
+            A CAP income-support és az LDR itt minimumként viselkedik.
+            A CAP-minimum feletti income-support, valamint a nem ring-fenced
+            CAP-beavatkozások a szabad/non-ring-fenced mozgásteret fogyasztják.
             </div>
             """,
             unsafe_allow_html=True,
@@ -1140,7 +1496,9 @@ with tab_ring:
             =
             B_{NRF,0}
             -
-            (CAP-CAP_{min})_+
+            (CAP_{income}-CAP_{min})_+
+            -
+            CAP_{nonring}
             -
             (LDR-LDR_{min})_+
             -
@@ -1333,6 +1691,8 @@ with tab_data:
                 {
                     "Jogosult mennyiség": "{:,.1f}",
                     "Egységösszeg (€)": "{:,.2f}",
+                    "2024 referencia (€)": "{:,.2f}",
+                    "Referencia-boríték (M€)": "{:,.2f}",
                     "Boríték (M€)": "{:,.2f}",
                 }
             ),
