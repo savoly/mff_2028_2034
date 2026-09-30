@@ -13,8 +13,8 @@ from numpy.typing import NDArray
 
 from mff.new_cap import (
     analyze_by_area_categories,
-    apply_reductions,
-    cal_redist,
+    apply_reductions_vec,
+    cal_redist_vec,
     calc_ratio_subs,
     calc_thresholds,
     compute_capped_subsidies,
@@ -49,19 +49,20 @@ def plot_per_ha(
         100 * int(ha_upper_l / 10) + 1,
     )
 
-    y_values_capping_per_ha = [
-        apply_reductions(
-            policy.base_payment_per_ha * x
-            + policy.yfs_per_ha * min(policy.yfs_cap_ha, x)
-            + cal_redist(x, policy.redist_params)
-        )
-        / x
-        for x in x_values
-    ]
+    gross = (
+        policy.base_payment_per_ha * x_values
+        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
+        + cal_redist_vec(x_values, policy.redist_params)
+    )
 
-    y_values_current_per_ha = [
-        compute_current_support(x, policy.yfs_per_ha) / x for x in x_values
-    ]
+    y_values_capping_per_ha = (
+        apply_reductions_vec(pd.Series(gross)).to_numpy() / x_values
+    )
+
+    y_values_current_per_ha = (
+        np.array([compute_current_support(x, policy.yfs_per_ha) for x in x_values])
+        / x_values
+    )
 
     zero_crossings = find_cur_new_equal_roots(
         policy.base_payment_per_ha,
@@ -219,14 +220,13 @@ def plot_total(
         100 * int(ha_upper_l / 10) + 1,
     )
 
-    y_values_capping = [
-        apply_reductions(
-            policy.base_payment_per_ha * x
-            + policy.yfs_per_ha * min(policy.yfs_cap_ha, x)
-            + cal_redist(x, policy.redist_params)
-        )
-        for x in x_values
-    ]
+    gross = (
+        policy.base_payment_per_ha * x_values
+        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
+        + cal_redist_vec(x_values, policy.redist_params)
+    )
+
+    y_values_capping = apply_reductions_vec(pd.Series(gross)).to_numpy()
 
     y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
 
@@ -381,14 +381,13 @@ def plot_diff_dual_axis(
         100 * int(ha_upper_l / 10) + 1,
     )
 
-    y_values_capping = [
-        apply_reductions(
-            policy.base_payment_per_ha * x
-            + policy.yfs_per_ha * min(policy.yfs_cap_ha, x)
-            + cal_redist(x, policy.redist_params)
-        )
-        for x in x_values
-    ]
+    gross = (
+        policy.base_payment_per_ha * x_values
+        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
+        + cal_redist_vec(x_values, policy.redist_params)
+    )
+
+    y_values_capping = apply_reductions_vec(pd.Series(gross)).to_numpy()
 
     y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
 
@@ -761,18 +760,23 @@ def plot_reduction(
     ha_upper_l = 255000 / policy.base_payment_per_ha
     x_values = np.linspace(0.01, ha_upper_l, 100 * int(ha_upper_l / 10) + 1)
 
-    y_values_before_capping = [
-        policy.base_payment_per_ha * x
-        + policy.yfs_per_ha * min(policy.yfs_cap_ha, x)
-        + cal_redist(x, policy.redist_params)
-        for x in x_values
-    ]
-    y_values_after_capping = [apply_reductions(y) for y in y_values_before_capping]
+    gross = (
+        policy.base_payment_per_ha * x_values
+        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
+        + cal_redist_vec(x_values, policy.redist_params)
+    )
 
-    percent_diff = [
-        cap / no_cap * 100 if no_cap != 0 else 0
-        for cap, no_cap in zip(y_values_after_capping, y_values_before_capping)
-    ]
+    y_values_capping = apply_reductions_vec(pd.Series(gross)).to_numpy()
+
+    percent_diff = (
+        np.divide(
+            y_values_capping,
+            gross,
+            out=np.zeros_like(y_values_capping),
+            where=gross != 0,
+        )
+        * 100
+    )
 
     _, ax = plt.subplots(figsize=(12, 6))
 
@@ -811,44 +815,48 @@ def plot_diff_pct(
         100 * int(ha_upper_l / 10) + 1,
     )
 
-    y_values_capping = [
-        apply_reductions(
-            policy.base_payment_per_ha * x
-            + policy.yfs_per_ha * min(policy.yfs_cap_ha, x)
-            + cal_redist(x, policy.redist_params)
-        )
-        for x in x_values
-    ]
+    gross = (
+        policy.base_payment_per_ha * x_values
+        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
+        + cal_redist_vec(x_values, policy.redist_params)
+    )
+
+    y_values_capping = apply_reductions_vec(pd.Series(gross)).to_numpy()
 
     y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
 
-    percent_diff = [
-        (cap - curr) / curr * 100 if curr != 0 else 0
-        for cap, curr in zip(y_values_capping, y_values_current)
-    ]
+    y_values_current = np.asarray(y_values_current)
 
-    peak_x = maximize_ratio(
-        50,
-        policy.base_payment_per_ha,
-        policy.yfs_per_ha,
-        policy.redist_params,
+    percent_diff = (
+        np.divide(
+            y_values_capping - y_values_current,
+            y_values_current,
+            out=np.zeros_like(y_values_capping),
+            where=y_values_current != 0,
+        )
+        * 100
     )
+
+    # Maximum közvetlenül a már kiszámolt görbéből
+    peak_idx = np.nanargmax(percent_diff)
+    peak_x = x_values[peak_idx]
+    peak_y = percent_diff[peak_idx]
+
     peak_x_rounded = int(c_round(peak_x, 0))
-    peak_y = 100 * calc_ratio_subs(
-        peak_x,
-        policy.base_payment_per_ha,
-        policy.yfs_per_ha,
-        policy.redist_params,
-    )
     peak_y_rounded = c_round(peak_y, 2)
 
-    zero_crossings = find_cur_new_equal_roots(
-        policy.base_payment_per_ha,
-        policy.redist_params,
-        policy.yfs_per_ha,
-    )
+    # Egyenlőségi pontok közvetlenül a már kiszámolt görbéből
+    diff = y_values_capping - y_values_current
+    crossing_idx = np.flatnonzero(diff[:-1] * diff[1:] < 0)
 
-    zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
+    zero_crossings = []
+
+    for i in crossing_idx:
+        x1, x2 = x_values[i], x_values[i + 1]
+        y1, y2 = diff[i], diff[i + 1]
+
+        root = x1 - y1 * (x2 - x1) / (y2 - y1)
+        zero_crossings.append(root)
 
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(12, 6))

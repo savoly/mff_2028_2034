@@ -6,6 +6,13 @@ from scipy.optimize import RootResults, minimize, root_scalar
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from mff.dabis_engine import (
+    DEFAULT_DABIS_POLICY,
+    DabisPolicy,
+    apply_degression,
+    calculate_dabis,
+    legacy_components,
+)
 from mff.utils import c_round
 
 Number = float | int
@@ -111,17 +118,22 @@ def find_flat_rate(
     budget: float,
     yfs_per_ha: float,
     redist_per_ha: tuple[float, float],
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
+    bracket: tuple[float, float] = (100.0, 500.0),
 ) -> RootResults:
-    area = data["area_biss_criss"].to_numpy()
-    yfs_area = data["area_yfs_cur_eligible"].to_numpy()
-    redist = cal_redist_vec(area, redist_per_ha)
+    """Backward-compatible paid-budget root solver."""
 
     def residual(flat_rate: float) -> float:
-        uncapped = flat_rate * area + yfs_per_ha * yfs_area + redist
-        capped = apply_reductions_vec(pd.Series(uncapped))
-        return budget - capped.sum()
+        result = compute_capped_subsidies(
+            data,
+            flat_rate,
+            yfs_per_ha,
+            redist_per_ha,
+            policy,
+        )
+        return budget - result["subs_capped"].sum()
 
-    return root_scalar(residual, bracket=(100.0, 500.0), method="brentq")
+    return root_scalar(residual, bracket=bracket, method="brentq")
 
 
 def find_budget(
@@ -129,6 +141,7 @@ def find_budget(
     flat_rate: float,
     yfs: float,
     redist_per_ha: tuple[float, float],
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
 ) -> float:
     return float(
         compute_capped_subsidies(
@@ -136,6 +149,7 @@ def find_budget(
             flat_rate,
             yfs,
             redist_per_ha,
+            policy,
         )["subs_capped"].sum()
     )
 
@@ -160,69 +174,56 @@ def find_cur_new_equal_roots(
     x_max: float = 10_000,
     n: int = 10_000,
 ) -> list[float]:
+    x_values = np.geomspace(x_min, x_max, n)
+
+    gross = (
+        eur_per_ha * x_values
+        + yfs_per_ha * np.minimum(300, x_values)
+        + cal_redist_vec(x_values, redist_per_ha)
+    )
+
+    new_support = apply_reductions_vec(pd.Series(gross)).to_numpy()
+
+    current_support = np.array(
+        [compute_current_support(x, yfs_per_ha) for x in x_values]
+    )
+
+    f_values = new_support - current_support
+
     def f(x: float) -> float:
         return apply_reductions(
             eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha)
         ) - compute_current_support(x, yfs_per_ha)
 
-    x_values = np.geomspace(x_min, x_max, n)
-    f_values = np.array([f(x) for x in x_values])
-
     roots = []
 
-    for x1, x2, y1, y2 in zip(
-        x_values[:-1],
-        x_values[1:],
-        f_values[:-1],
-        f_values[1:],
-    ):
-        if y1 * y2 < 0:
-            root = root_scalar(
-                f,
-                bracket=(x1, x2),
-                method="brentq",
-            ).root
-            roots.append(root)
+    crossing_idx = np.flatnonzero(f_values[:-1] * f_values[1:] < 0)
+
+    for i in crossing_idx:
+        root = root_scalar(
+            f,
+            bracket=(x_values[i], x_values[i + 1]),
+            method="brentq",
+        ).root
+
+        roots.append(root)
 
     return roots
 
 
-def apply_reductions(amount: float) -> float:
-    capped = 0.0
-
-    if amount <= 20_000:
-        capped = amount
-    elif amount <= 50_000:
-        capped = 20_000 + 0.75 * (amount - 20_000)
-    elif amount <= 75_000:
-        capped = 20_000 + 0.75 * 30_000 + 0.5 * (amount - 50_000)
-    else:
-        capped = 20_000 + 0.75 * 30_000 + 0.5 * 25_000 + 0.25 * (amount - 75_000)
-        capped = min(capped, 100_000)
-
-    return capped
+def apply_reductions(
+    amount: float, policy: DabisPolicy = DEFAULT_DABIS_POLICY
+) -> float:
+    result = apply_degression([amount], policy)
+    return float(result["dabis_paid"].iloc[0])
 
 
-def apply_reductions_vec(series: pd.Series) -> pd.Series:
-    x = series.to_numpy()
-    capped = np.piecewise(
-        x,
-        [
-            x <= 20_000,
-            (x > 20_000) & (x <= 50_000),
-            (x > 50_000) & (x <= 75_000),
-            x > 75_000,
-        ],
-        [
-            lambda x: x,
-            lambda x: 20_000 + 0.75 * (x - 20_000),
-            lambda x: 20_000 + 0.75 * 30_000 + 0.5 * (x - 50_000),
-            lambda x: np.minimum(
-                20_000 + 0.75 * 30_000 + 0.5 * 25_000 + 0.25 * (x - 75_000), 100_000
-            ),
-        ],
-    )
-    return pd.Series(capped, index=series.index)
+def apply_reductions_vec(
+    series: pd.Series,
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
+) -> pd.Series:
+    result = apply_degression(series, policy)
+    return result["dabis_paid"].rename(series.name)
 
 
 def cal_redist_vec(
@@ -407,16 +408,33 @@ def compute_capped_subsidies(
     subs_per_ha: float,
     yfs_per_ha: float,
     redist_per_ha: tuple[float, float],
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
 ) -> pd.DataFrame:
-    df = df.copy()
+    """Backward-compatible legacy calculation + full reduction diagnostics."""
+    out = df.copy()
 
-    df["subs_eur"] = (
-        subs_per_ha * df["area_biss_criss"]
-        + yfs_per_ha * df["area_yfs_cur_eligible"]
-        + cal_redist_vec(df["area_biss_criss"], redist_per_ha)
+    components = legacy_components(
+        out,
+        flat_rate=subs_per_ha,
+        yfs_per_ha=yfs_per_ha,
+        redist_per_ha=redist_per_ha,
     )
-    df["subs_capped"] = apply_reductions_vec(df["subs_eur"])
-    return df
+    result = calculate_dabis(out, components, policy)
+
+    # Keep names expected by all old notebooks/apps.
+    out["subs_eur"] = result["dabis_gross"]
+    out["subs_capped"] = result["dabis_paid"]
+
+    # New diagnostics; old callers can simply ignore them.
+    out["subs_degression_reduction"] = result["reduction_degression"]
+    out["subs_capping_reduction"] = result["reduction_capping"]
+    out["subs_total_reduction"] = result["reduction_total"]
+
+    for col in result.columns:
+        if col.startswith("reduction_") and col not in out.columns:
+            out[col] = result[col]
+
+    return out
 
 
 def analyze_by_area_categories(
