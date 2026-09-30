@@ -136,6 +136,32 @@ def find_flat_rate(
     return root_scalar(residual, bracket=bracket, method="brentq")
 
 
+def find_gross_flat_rate(
+    data: pd.DataFrame,
+    gross_budget: float,
+    yfs_per_ha: float,
+    redist_per_ha: tuple[float, float] = (0.0, 0.0),
+) -> float:
+    area = data["area_biss_criss"].fillna(0).sum()
+
+    yfs_amount = data["area_yfs_cur_eligible"].fillna(0).sum() * yfs_per_ha
+
+    redist_amount = cal_redist_vec(
+        data["area_biss_criss"],
+        redist_per_ha,
+    ).sum()
+
+    remaining_for_base = gross_budget - yfs_amount - redist_amount
+
+    if area <= 0:
+        raise ValueError("A jogosult terület összege nulla.")
+
+    if remaining_for_base < 0:
+        raise ValueError("A célkeretet már a kiegészítő támogatások is meghaladják.")
+
+    return float(remaining_for_base / area)
+
+
 def find_budget(
     data: pd.DataFrame,
     flat_rate: float,
@@ -155,11 +181,15 @@ def find_budget(
 
 
 def find_cur_new_equal_root(
-    eur_per_ha: float, redist_per_ha: tuple[float, float], yfs_per_ha: float
+    eur_per_ha: float,
+    redist_per_ha: tuple[float, float],
+    yfs_per_ha: float,
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
 ) -> float:
     def f(x):
         return apply_reductions(
-            eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha)
+            eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha),
+            policy,
         ) - compute_current_support(x, yfs_per_ha)
 
     sol = root_scalar(f, bracket=(1e-3, 4e9), method="brentq")
@@ -170,6 +200,7 @@ def find_cur_new_equal_roots(
     eur_per_ha: float,
     redist_per_ha: tuple[float, float],
     yfs_per_ha: float,
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
     x_min: float = 1e-3,
     x_max: float = 10_000,
     n: int = 10_000,
@@ -182,7 +213,7 @@ def find_cur_new_equal_roots(
         + cal_redist_vec(x_values, redist_per_ha)
     )
 
-    new_support = apply_reductions_vec(pd.Series(gross)).to_numpy()
+    new_support = apply_reductions_vec(pd.Series(gross), policy).to_numpy()
 
     current_support = np.array(
         [compute_current_support(x, yfs_per_ha) for x in x_values]
@@ -192,7 +223,8 @@ def find_cur_new_equal_roots(
 
     def f(x: float) -> float:
         return apply_reductions(
-            eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha)
+            eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha),
+            policy,
         ) - compute_current_support(x, yfs_per_ha)
 
     roots = []
@@ -437,6 +469,89 @@ def compute_capped_subsidies(
     return out
 
 
+def summarize_reduction_breakdown(
+    data: pd.DataFrame,
+    dabis_per_ha: float,
+    yfs_per_ha: float,
+    redist_per_ha: tuple[float, float],
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
+    type_of_calc: str = "all",
+) -> pd.DataFrame:
+    """Aggregate degression-band and capping reductions for the selected farms."""
+    result = compute_capped_subsidies(
+        data,
+        dabis_per_ha,
+        yfs_per_ha,
+        redist_per_ha,
+        policy,
+    )
+
+    young_mask = result["area_yfs_cur_eligible"] > 0
+    if type_of_calc == "yf":
+        result = result.loc[young_mask].copy()
+    elif type_of_calc == "not-yf":
+        result = result.loc[~young_mask].copy()
+    elif type_of_calc != "all":
+        raise ValueError("type_of_calc must be 'all', 'yf' or 'not-yf'")
+
+    special = {
+        "reduction_degression",
+        "reduction_capping",
+        "reduction_total",
+        "subs_degression_reduction",
+        "subs_capping_reduction",
+        "subs_total_reduction",
+    }
+    band_columns = [
+        col
+        for col in result.columns
+        if col.startswith("reduction_") and col not in special
+    ]
+
+    gross_total = float(result["subs_eur"].sum())
+    rows: list[dict[str, float | int | str]] = []
+
+    for band, column in zip(policy.bands, band_columns, strict=True):
+        amount = float(result[column].sum())
+        upper_label = (
+            "∞" if band.upper is None else f"{band.upper:,.0f}".replace(",", " ")
+        )
+        lower_label = f"{band.lower:,.0f}".replace(",", " ")
+        rows.append(
+            {
+                "Tétel": f"{lower_label}–{upper_label} €",
+                "Típus": "Degresszió",
+                "Elvonási ráta (%)": 100 * band.reduction_rate,
+                "Elvonás (€)": amount,
+                "Elvonás (M€)": amount / 1e6,
+                "Érintett üzem (db)": int((result[column] > 0).sum()),
+                "Bruttó DABIS aránya (%)": (
+                    100 * amount / gross_total if gross_total else 0.0
+                ),
+            }
+        )
+
+    cap_amount = float(result["subs_capping_reduction"].sum())
+    if policy.payment_cap is not None:
+        rows.append(
+            {
+                "Tétel": f"Kifizetési plafon · {policy.payment_cap:,.0f} €".replace(
+                    ",", " "
+                ),
+                "Típus": "Capping",
+                "Elvonási ráta (%)": np.nan,
+                "Elvonás (€)": cap_amount,
+                "Elvonás (M€)": cap_amount / 1e6,
+                "Érintett üzem (db)": int((result["subs_capping_reduction"] > 0).sum()),
+                "Bruttó DABIS aránya (%)": (
+                    100 * cap_amount / gross_total if gross_total else 0.0
+                ),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
 def analyze_by_area_categories(
     df: pd.DataFrame, bins: list[Number], labels: list[str]
 ) -> pd.DataFrame:
@@ -649,6 +764,7 @@ def calc_degressive_and_capping_steps(
     redistributive_per_ha: tuple[float, float],
     yfs_per_ha: float,
     type_of_calc: str = "all",
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
 ) -> pd.DataFrame:
     thresholds = [20_000, 50_000, 75_000, 255_000]
     thresholds_ha = calc_thresholds(
@@ -666,7 +782,7 @@ def calc_degressive_and_capping_steps(
         + cal_redist_vec(df["area_biss_criss"], redistributive_per_ha)
     )
     df["subs_dabis_after_capping"] = apply_reductions_vec(
-        df["subs_dabis_before_capping"]
+        df["subs_dabis_before_capping"], policy
     )
 
     mask = df["area_yfs_cur_eligible"] > 0
@@ -678,24 +794,31 @@ def calc_degressive_and_capping_steps(
     return create_dabis_summary(df, bins, labels)
 
 
-def calc_ratio_subs(x, eur_per_ha, yfs_per_ha, redist_per_ha):
+def calc_ratio_subs(
+    x, eur_per_ha, yfs_per_ha, redist_per_ha, policy=DEFAULT_DABIS_POLICY
+):
     new_subs = apply_reductions(
-        eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha)
+        eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha),
+        policy,
     )
     cur_subs = compute_current_support(x, yfs_per_ha)
     return (new_subs - cur_subs) / (cur_subs + 1e-12)
 
 
-def _neg_ratio_logz(z, eur_per_ha, yfs_per_ha, redist_per_ha):
+def _neg_ratio_logz(
+    z, eur_per_ha, yfs_per_ha, redist_per_ha, policy=DEFAULT_DABIS_POLICY
+):
     x = float(np.exp(z[0]))  # ensures x > 0
-    return -calc_ratio_subs(x, eur_per_ha, yfs_per_ha, redist_per_ha)
+    return -calc_ratio_subs(x, eur_per_ha, yfs_per_ha, redist_per_ha, policy)
 
 
-def maximize_ratio(x0, eur_per_ha, yfs_per_ha, redist_per_ha):
+def maximize_ratio(
+    x0, eur_per_ha, yfs_per_ha, redist_per_ha, policy=DEFAULT_DABIS_POLICY
+):
     res = minimize(
         _neg_ratio_logz,
         [np.log(max(x0, 1e-8))],
-        args=(eur_per_ha, yfs_per_ha, redist_per_ha),
+        args=(eur_per_ha, yfs_per_ha, redist_per_ha, policy),
         method="Nelder-Mead",
     )
     return float(np.exp(res.x[0]))

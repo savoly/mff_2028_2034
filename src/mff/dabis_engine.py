@@ -71,6 +71,45 @@ def _validate_bands(bands: Sequence[DegressionBand]) -> None:
 DEFAULT_DABIS_POLICY = DabisPolicy()
 
 
+def gross_at_payment_cap(policy: DabisPolicy = DEFAULT_DABIS_POLICY) -> float | None:
+    """Return the gross DABIS amount where the post-degression payment reaches the cap.
+
+    The result is the gross-support threshold that triggers capping.  It is derived
+    from the configured marginal degression bands, so it changes automatically when
+    either a reduction rate, a band boundary, or the payment cap changes.
+    """
+    if policy.payment_cap is None:
+        return None
+
+    target = float(policy.payment_cap)
+    if target <= 0:
+        return 0.0
+
+    paid_before_band = 0.0
+
+    for band in policy.bands:
+        retention_rate = 1.0 - band.reduction_rate
+        if band.upper is None:
+            width = np.inf
+        else:
+            width = float(band.upper - band.lower)
+
+        if retention_rate <= 0:
+            # A 100% reduction band cannot increase the post-degression payment.
+            if target <= paid_before_band:
+                return float(band.lower)
+            continue
+
+        paid_capacity = width * retention_rate
+
+        if target <= paid_before_band + paid_capacity:
+            return float(band.lower + (target - paid_before_band) / retention_rate)
+
+        paid_before_band += paid_capacity
+
+    return None
+
+
 def _safe_label(label: str) -> str:
     return (
         label.lower()

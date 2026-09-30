@@ -11,6 +11,11 @@ from matplotlib.patches import Rectangle
 from matplotlib.ticker import FuncFormatter, MultipleLocator, PercentFormatter
 from numpy.typing import NDArray
 
+from mff.dabis_engine import (
+    DEFAULT_DABIS_POLICY,
+    DabisPolicy,
+    gross_at_payment_cap,
+)
 from mff.new_cap import (
     analyze_by_area_categories,
     apply_reductions_vec,
@@ -33,6 +38,63 @@ class PolicyParams:
     yfs_per_ha: float
     redist_params: tuple[float, float]
     yfs_cap_ha: float = 300.0
+    dabis_policy: DabisPolicy = DEFAULT_DABIS_POLICY
+
+
+def _plot_gross_upper(policy: PolicyParams) -> float:
+    cap_trigger = gross_at_payment_cap(policy.dabis_policy)
+    if cap_trigger is not None and np.isfinite(cap_trigger):
+        return max(cap_trigger * 1.05, 1.0)
+
+    finite_bounds = [
+        float(band.upper)
+        for band in policy.dabis_policy.bands
+        if band.upper is not None
+    ]
+    return max([255_000.0, *(bound * 1.5 for bound in finite_bounds)])
+
+
+def _policy_threshold_items(policy: PolicyParams) -> list[tuple[float, str]]:
+    items: list[tuple[float, str]] = []
+
+    for band in policy.dabis_policy.bands[1:]:
+        items.append(
+            (
+                float(band.lower),
+                f"{band.lower:,.0f} €\n{band.reduction_rate:.0%} elvonás".replace(
+                    ",", " "
+                ),
+            )
+        )
+
+    cap_trigger = gross_at_payment_cap(policy.dabis_policy)
+    if cap_trigger is not None and np.isfinite(cap_trigger):
+        items.append(
+            (
+                float(cap_trigger),
+                (f"Capping\n{policy.dabis_policy.payment_cap:,.0f} € plafon").replace(
+                    ",", " "
+                ),
+            )
+        )
+
+    return sorted(items, key=lambda item: item[0])
+
+
+def _thresholds_in_ha(
+    policy: PolicyParams,
+    items: list[tuple[float, str]],
+) -> list[tuple[float, str]]:
+    if not items:
+        return []
+    gross_thresholds = [threshold for threshold, _ in items]
+    hectares = calc_thresholds(
+        gross_thresholds,
+        policy.base_payment_per_ha,
+        policy.redist_params,
+        policy.yfs_per_ha,
+    )
+    return list(zip(hectares, [label for _, label in items], strict=True))
 
 
 def plot_per_ha(
@@ -42,7 +104,7 @@ def plot_per_ha(
     title: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = 255_000 / policy.base_payment_per_ha
+    ha_upper_l = _plot_gross_upper(policy) / policy.base_payment_per_ha
     x_values = np.linspace(
         0.01,
         ha_upper_l,
@@ -56,7 +118,8 @@ def plot_per_ha(
     )
 
     y_values_capping_per_ha = (
-        apply_reductions_vec(pd.Series(gross)).to_numpy() / x_values
+        apply_reductions_vec(pd.Series(gross), policy.dabis_policy).to_numpy()
+        / x_values
     )
 
     y_values_current_per_ha = (
@@ -68,18 +131,14 @@ def plot_per_ha(
         policy.base_payment_per_ha,
         policy.redist_params,
         policy.yfs_per_ha,
+        policy.dabis_policy,
     )
 
     # Only plot equality points that are inside the plotted range
     zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
 
-    thresholds = [20_000, 50_000, 75_000, 255_000]
-    thresholds_ha = calc_thresholds(
-        thresholds,
-        policy.base_payment_per_ha,
-        policy.redist_params,
-        policy.yfs_per_ha,
-    )
+    threshold_items = _policy_threshold_items(policy)
+    thresholds_ha = _thresholds_in_ha(policy, threshold_items)
 
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(12, 7))
@@ -104,7 +163,7 @@ def plot_per_ha(
     y_max = max(y_values_capping_per_ha)
 
     # Degression / capping thresholds
-    for threshold, threshold_ha in zip(thresholds, thresholds_ha):
+    for threshold_ha, threshold_label in thresholds_ha:
         ax.axvline(
             x=threshold_ha,
             color="red",
@@ -113,11 +172,9 @@ def plot_per_ha(
             alpha=0.6,
         )
 
-        label = (
-            f"Capping határ: 255 000 €\n({c_round(threshold_ha, 0):,.0f} ha)"
-            if threshold == 255_000
-            else f"{threshold:,.0f} €\n({c_round(threshold_ha, 0):,.0f} ha)"
-        ).replace(",", " ")
+        label = (f"{threshold_label}\n({c_round(threshold_ha, 0):,.0f} ha)").replace(
+            ",", " "
+        )
 
         ax.text(
             threshold_ha + 5,
@@ -213,7 +270,7 @@ def plot_total(
     title: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = 255_000 / policy.base_payment_per_ha
+    ha_upper_l = _plot_gross_upper(policy) / policy.base_payment_per_ha
     x_values = np.linspace(
         0.01,
         ha_upper_l,
@@ -226,7 +283,9 @@ def plot_total(
         + cal_redist_vec(x_values, policy.redist_params)
     )
 
-    y_values_capping = apply_reductions_vec(pd.Series(gross)).to_numpy()
+    y_values_capping = apply_reductions_vec(
+        pd.Series(gross), policy.dabis_policy
+    ).to_numpy()
 
     y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
 
@@ -234,17 +293,13 @@ def plot_total(
         policy.base_payment_per_ha,
         policy.redist_params,
         policy.yfs_per_ha,
+        policy.dabis_policy,
     )
 
     zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
 
-    thresholds = [20_000, 50_000, 75_000, 255_000]
-    thresholds_ha = calc_thresholds(
-        thresholds,
-        policy.base_payment_per_ha,
-        policy.redist_params,
-        policy.yfs_per_ha,
-    )
+    threshold_items = _policy_threshold_items(policy)
+    thresholds_ha = _thresholds_in_ha(policy, threshold_items)
 
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(12, 7))
@@ -268,7 +323,7 @@ def plot_total(
 
     y_max = max(y_values_capping)
 
-    for threshold, threshold_ha in zip(thresholds, thresholds_ha):
+    for threshold_ha, threshold_label in thresholds_ha:
         ax.axvline(
             x=threshold_ha,
             color="red",
@@ -277,11 +332,9 @@ def plot_total(
             alpha=0.6,
         )
 
-        label = (
-            f"Capping határ: 255 000 €\n({c_round(threshold_ha, 0):,.0f} ha)"
-            if threshold == 255_000
-            else f"{threshold:,.0f} €\n({c_round(threshold_ha, 0):,.0f} ha)"
-        ).replace(",", " ")
+        label = (f"{threshold_label}\n({c_round(threshold_ha, 0):,.0f} ha)").replace(
+            ",", " "
+        )
 
         ax.text(
             threshold_ha + 5,
@@ -374,7 +427,7 @@ def plot_diff_dual_axis(
     output_path: str,
     cum_mode: str = "farms",
 ) -> None:
-    ha_upper_l = 255_000 / policy.base_payment_per_ha
+    ha_upper_l = _plot_gross_upper(policy) / policy.base_payment_per_ha
     x_values = np.linspace(
         0.01,
         ha_upper_l,
@@ -387,7 +440,9 @@ def plot_diff_dual_axis(
         + cal_redist_vec(x_values, policy.redist_params)
     )
 
-    y_values_capping = apply_reductions_vec(pd.Series(gross)).to_numpy()
+    y_values_capping = apply_reductions_vec(
+        pd.Series(gross), policy.dabis_policy
+    ).to_numpy()
 
     y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
 
@@ -402,6 +457,7 @@ def plot_diff_dual_axis(
         policy.base_payment_per_ha,
         policy.yfs_per_ha,
         policy.redist_params,
+        policy.dabis_policy,
     )
 
     peak_x_rounded = int(c_round(peak_x, 0))
@@ -411,6 +467,7 @@ def plot_diff_dual_axis(
         policy.base_payment_per_ha,
         policy.yfs_per_ha,
         policy.redist_params,
+        policy.dabis_policy,
     )
 
     peak_y_rounded = c_round(peak_y, 2)
@@ -420,6 +477,7 @@ def plot_diff_dual_axis(
         policy.base_payment_per_ha,
         policy.redist_params,
         policy.yfs_per_ha,
+        policy.dabis_policy,
     )
 
     zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
@@ -757,7 +815,7 @@ def plot_reduction(
     scen_name: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = 255000 / policy.base_payment_per_ha
+    ha_upper_l = _plot_gross_upper(policy) / policy.base_payment_per_ha
     x_values = np.linspace(0.01, ha_upper_l, 100 * int(ha_upper_l / 10) + 1)
 
     gross = (
@@ -766,7 +824,9 @@ def plot_reduction(
         + cal_redist_vec(x_values, policy.redist_params)
     )
 
-    y_values_capping = apply_reductions_vec(pd.Series(gross)).to_numpy()
+    y_values_capping = apply_reductions_vec(
+        pd.Series(gross), policy.dabis_policy
+    ).to_numpy()
 
     percent_diff = (
         np.divide(
@@ -798,7 +858,7 @@ def plot_reduction(
     ax.xaxis.set_major_formatter(formatter)
     ax.yaxis.set_major_formatter(formatter)
 
-    plt.savefig(output_path, dpi=300)
+    plt.savefig(output_path, dpi=180)
     plt.show()
 
 
@@ -808,7 +868,7 @@ def plot_diff_pct(
     scen_name: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = 255_000 / policy.base_payment_per_ha
+    ha_upper_l = _plot_gross_upper(policy) / policy.base_payment_per_ha
     x_values = np.linspace(
         0.01,
         ha_upper_l,
@@ -821,11 +881,14 @@ def plot_diff_pct(
         + cal_redist_vec(x_values, policy.redist_params)
     )
 
-    y_values_capping = apply_reductions_vec(pd.Series(gross)).to_numpy()
+    y_values_capping = apply_reductions_vec(
+        pd.Series(gross), policy.dabis_policy
+    ).to_numpy()
 
-    y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
-
-    y_values_current = np.asarray(y_values_current)
+    y_values_current = np.asarray(
+        [compute_current_support(x, policy.yfs_per_ha) for x in x_values],
+        dtype=float,
+    )
 
     percent_diff = (
         np.divide(
@@ -837,26 +900,20 @@ def plot_diff_pct(
         * 100
     )
 
-    # Maximum közvetlenül a már kiszámolt görbéből
-    peak_idx = np.nanargmax(percent_diff)
-    peak_x = x_values[peak_idx]
-    peak_y = percent_diff[peak_idx]
-
+    peak_idx = int(np.nanargmax(percent_diff))
+    peak_x = float(x_values[peak_idx])
+    peak_y = float(percent_diff[peak_idx])
     peak_x_rounded = int(c_round(peak_x, 0))
     peak_y_rounded = c_round(peak_y, 2)
 
-    # Egyenlőségi pontok közvetlenül a már kiszámolt görbéből
     diff = y_values_capping - y_values_current
     crossing_idx = np.flatnonzero(diff[:-1] * diff[1:] < 0)
-
-    zero_crossings = []
+    zero_crossings: list[float] = []
 
     for i in crossing_idx:
         x1, x2 = x_values[i], x_values[i + 1]
         y1, y2 = diff[i], diff[i + 1]
-
-        root = x1 - y1 * (x2 - x1) / (y2 - y1)
-        zero_crossings.append(root)
+        zero_crossings.append(float(x1 - y1 * (x2 - x1) / (y2 - y1)))
 
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -887,39 +944,26 @@ def plot_diff_pct(
             label="Egyenlőségi pont" if i == 0 else None,
         )
 
-    # Maximum
     ax.annotate(
         f"{peak_y_rounded}% ({peak_x_rounded} ha)",
         xy=(peak_x, peak_y),
         xytext=(35, -30),
         textcoords="offset points",
-        arrowprops={
-            "arrowstyle": "->",
-            "color": "red",
-        },
+        arrowprops={"arrowstyle": "->", "color": "red"},
         fontsize=11,
         fontweight="bold",
         color="red",
     )
 
-    # Egyenlőségi pontok
-    offsets = [
-        (-45, 18),
-        (15, 18),
-    ]
-
+    offsets = [(-45, 18), (15, 18)]
     for i, zero_cross_x in enumerate(zero_crossings):
         offset = offsets[i] if i < len(offsets) else (15, 18 + 18 * i)
-
         ax.annotate(
             f"{zero_cross_x:.0f} ha",
             xy=(zero_cross_x, 0),
             xytext=offset,
             textcoords="offset points",
-            arrowprops={
-                "arrowstyle": "->",
-                "color": "#56B4E9",
-            },
+            arrowprops={"arrowstyle": "->", "color": "#56B4E9"},
             fontsize=11,
             fontweight="bold",
             color="#56B4E9",
@@ -929,18 +973,12 @@ def plot_diff_pct(
     ax.set_xlabel("Üzemméret (ha)", fontsize=12, fontweight="bold")
     ax.set_ylabel("Eltérés (%)", fontsize=12, fontweight="bold")
     ax.set_title(title_name, fontsize=14, fontweight="bold")
-
     ax.legend(loc="best", fontsize=11, frameon=True)
-
     ax.xaxis.set_major_formatter(formatter)
     ax.yaxis.set_major_formatter(formatter)
 
     fig.tight_layout()
-    fig.savefig(
-        output_path,
-        dpi=300,
-        bbox_inches="tight",
-    )
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.show()
 
 
@@ -1312,9 +1350,10 @@ def calc_support_summary_by_area_class(
     cal_type: str,
     bins: list[float],
     labels: list[str],
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
 ) -> pd.DataFrame:
     data_with_subs = compute_capped_subsidies(
-        data, dabis_per_ha, yfs_per_ha, redist_per_ha
+        data, dabis_per_ha, yfs_per_ha, redist_per_ha, policy
     )
     data_with_subs["subs_cur"] = (
         data_with_subs["subs_biss"]
@@ -1612,11 +1651,12 @@ def build_rate_area_matrix(
     bins: list[float],
     labels: list[str],
     subsidy_rates: NDArray[np.float64],
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
 ) -> pd.DataFrame:
     results = []
 
     for rate in subsidy_rates:
-        df_subs = compute_capped_subsidies(data, rate, 0, redist_per_ha)
+        df_subs = compute_capped_subsidies(data, rate, 0, redist_per_ha, policy)
         df_subs["subs_cur"] = df_subs["subs_biss"] + df_subs["subs_redist"]
 
         grouped = analyze_by_area_categories(df_subs, bins=bins, labels=labels)
