@@ -241,25 +241,25 @@ CIS_REFERENCE = {
         "max": 874.13,
     },
     "Hízott bika": {
-        "rate": 95.96,
+        "rate": 81.39,
         "budget": 5_061_180.70,
         "min": 40.76,
-        "max": 65.22,
+        "max": 85.00,  # TODO
     },
     "Anyatehén": {
-        "rate": 168.12,
+        "rate": 154.78,
         "budget": 34_631_327.25,
         "min": 111.96,
         "max": 174.94,
     },
     "Tejhasznú tehén": {
-        "rate": 168.12,
+        "rate": 330.66,
         "budget": 68_274_257.17,
         "min": 237.74,
         "max": 396.24,
     },
     "Anyajuh": {
-        "rate": 35.25,
+        "rate": 30.97,
         "budget": 21_767_730.60,
         "min": 24.16,
         "max": 35.53,
@@ -397,6 +397,44 @@ def dabis_after_degression(x: np.ndarray) -> np.ndarray:
     return x - r1 - r2 - r3
 
 
+def dabis_budget_m_for_rate(
+    area_ha: np.ndarray,
+    rate: float,
+    apply_degression: bool,
+) -> float:
+    """DABIS éves EU-kiadás M€-ban egy adott fajlagos mellett."""
+    gross = np.asarray(area_ha, dtype=float) * float(rate)
+    paid = dabis_after_degression(gross) if apply_degression else gross
+    return float(paid.sum() / 1_000_000)
+
+
+def max_dabis_rate_for_budget(
+    area_ha: np.ndarray,
+    budget_m: float,
+    apply_degression: bool,
+    upper_rate: float = 240.0,
+) -> float:
+    """
+    Legnagyobb DABIS fajlagos, amelynek degresszió utáni éves kiadása
+    nem haladja meg a megadott éves keretet.
+    """
+    if budget_m <= 0:
+        return 0.0
+
+    if dabis_budget_m_for_rate(area_ha, upper_rate, apply_degression) <= budget_m:
+        return float(upper_rate)
+
+    low, high = 0.0, float(upper_rate)
+    for _ in range(60):
+        mid = (low + high) / 2.0
+        if dabis_budget_m_for_rate(area_ha, mid, apply_degression) <= budget_m:
+            low = mid
+        else:
+            high = mid
+
+    return low
+
+
 def national_from_eu(
     eu_amount_m: float,
     national_share: float,
@@ -439,16 +477,30 @@ baseline_subs_m = data[["subs_biss", "subs_redist", "subs_yfs"]].sum().sum() / 1
 # ============================================================
 
 with st.sidebar.expander("🌾 CAP design", expanded=True):
-    dabis_rate = st.slider(
-        "DABIS fajlagos (€/ha)",
-        min_value=130,
-        max_value=240,
-        value=220,
-        step=5,
+    cap_total_bn = st.number_input(
+        "Tervezett teljes CAP-keret, 2028–2034 (mrd €)",
+        min_value=0.0,
+        value=9.24,
+        step=0.05,
+        format="%.2f",
+        help=(
+            "A szcenárió teljes, hét évre tervezett CAP EU-kerete. "
+            "Nem azonos a ring-fenced CAP income-support minimummal."
+        ),
+    )
+
+    cap_budget_guard = st.checkbox(
+        "CAP-keret automatikus betartása",
+        value=True,
+        help=(
+            "Bekapcsolva a DABIS a kiegyenlítő tétel: más CAP-beavatkozások "
+            "növelése csökkenti a DABIS számára megengedett maximumot. "
+            "Ha DABIS = 0 mellett sem fér el a szcenárió, az app túllépést jelez."
+        ),
     )
 
     apply_degression = st.checkbox(
-        "Degresszió alkalmazása",
+        "DABIS degresszió alkalmazása",
         value=True,
     )
 
@@ -620,6 +672,122 @@ with st.sidebar.expander("🔗 CIS", expanded=False):
 
 
 # ============================================================
+# PRE-CALCULATIONS – NON-DABIS CAP + DABIS BUDGET GUARD
+# ============================================================
+
+yfs_area_ha = data["area_yfs_cur_eligible"].sum()
+young_budget_m = yfs_area_ha * young_topup / 1_000_000
+
+sfs_mask = (data["area_biss_criss"] > 0) & (data["area_biss_criss"] <= sfs_max_area)
+sfs_farms = int(sfs_mask.sum())
+sfs_budget_m = sfs_farms * sfs_flat / 1_000_000
+
+cis_rows = []
+for label, (column, unit) in CIS_COMPONENTS.items():
+    quantity = float(data[column].sum())
+    rate = cis_rates[label]
+    amount_m = quantity * rate / 1_000_000
+    ref = CIS_REFERENCE[label]
+
+    cis_rows.append(
+        {
+            "CIS komponens": label,
+            "Jogosult mennyiség": quantity,
+            "Egység": unit,
+            "Egységösszeg (€)": rate,
+            "2024 referencia (€)": ref["rate"],
+            "Referencia-boríték (M€)": ref["budget"] / 1_000_000,
+            "Boríték (M€)": amount_m,
+        }
+    )
+
+cis_table = pd.DataFrame(cis_rows)
+cis_budget_m = cis_table["Boríték (M€)"].sum()
+cis_reference_delta_m = cis_budget_m - CIS_CURRENT_M
+
+# A DABIS-on kívüli teljes modellezett CAP-allokáció.
+non_dabis_cap_annual_m = (
+    young_budget_m
+    + cis_budget_m
+    + anc_eu_m
+    + mandatory_req_eu_m
+    + aec_eu_m
+    + sfs_budget_m
+    + risk_eu_m
+    + investment_eu_m
+    + young_startup_eu_m
+    + farm_relief_eu_m
+    + sectoral_support_eu_m
+    + leader_eu_m
+    + knowledge_eu_m
+    + territorial_coop_eu_m
+    + school_scheme_eu_m
+    + crisis_payments_eu_m
+)
+
+cap_target_annual_m = cap_total_bn * 1_000 / 7
+dabis_capacity_m = max(cap_target_annual_m - non_dabis_cap_annual_m, 0.0)
+non_dabis_overrun_m = max(non_dabis_cap_annual_m - cap_target_annual_m, 0.0)
+
+max_dabis_rate_cont = max_dabis_rate_for_budget(
+    area_biss,
+    dabis_capacity_m,
+    apply_degression,
+    upper_rate=240.0,
+)
+
+# A csúszka 5 €/ha lépésű, ezért lefelé kerekítünk: így nem lépjük túl a keretet.
+dabis_rate_cap = int(np.floor((max_dabis_rate_cont + 1e-9) / 5.0) * 5)
+dabis_rate_cap = int(np.clip(dabis_rate_cap, 0, 240))
+
+with st.sidebar.expander("🎚️ DABIS", expanded=True):
+    if cap_budget_guard:
+        st.caption(
+            f"DABIS-ra rendelkezésre áll: {eur_m(dabis_capacity_m)}/év · "
+            f"keretből számított max.: {max_dabis_rate_cont:.1f} €/ha"
+        )
+    else:
+        st.caption(
+            "Keretvédelem kikapcsolva: a DABIS 0–240 €/ha között szabadon mozgatható; "
+            "a CAP-keret esetleges túllépését a dashboard jelzi."
+        )
+
+    slider_max = dabis_rate_cap if cap_budget_guard else 240
+
+    if cap_budget_guard and non_dabis_overrun_m > 1e-9:
+        st.error(
+            "A DABIS-on kívüli CAP-beavatkozások önmagukban is meghaladják "
+            f"a teljes CAP-keretet {eur_m(non_dabis_overrun_m)}/év összeggel. "
+            "A DABIS ezért 0 €/ha-ra kényszerül."
+        )
+        st.session_state["dabis_rate"] = 0
+        dabis_rate = 0
+    elif cap_budget_guard and slider_max < 5:
+        st.warning(
+            "A fennmaradó CAP-keret 5 €/ha DABIS-t sem tesz lehetővé; a DABIS 0 €/ha."
+        )
+        st.session_state["dabis_rate"] = 0
+        dabis_rate = 0
+    else:
+        if "dabis_rate" not in st.session_state:
+            st.session_state["dabis_rate"] = min(220, slider_max)
+        elif st.session_state["dabis_rate"] > slider_max:
+            st.session_state["dabis_rate"] = slider_max
+
+        dabis_rate = st.slider(
+            "DABIS fajlagos (€/ha)",
+            min_value=0,
+            max_value=int(slider_max),
+            step=5,
+            key="dabis_rate",
+            help=(
+                "Keretvédelem mellett a maximum automatikusan csökken, ha más "
+                "CAP-beavatkozások több forrást kötnek le."
+            ),
+        )
+
+
+# ============================================================
 # SIDEBAR – NRPP / RING-FENCING
 # ============================================================
 
@@ -643,7 +811,7 @@ with st.sidebar.expander("🧩 NRPP / ring-fencing", expanded=True):
         step=0.05,
     )
     cap_min_bn = st.number_input(
-        "CAP minimum (mrd €)",
+        "CAP income-support minimum (mrd €)",
         min_value=0.0,
         value=9.24,
         step=0.05,
@@ -661,7 +829,7 @@ with st.sidebar.expander("🧩 NRPP / ring-fencing", expanded=True):
         step=0.05,
     )
     other_flexible_use_bn = st.number_input(
-        "Egyéb felhasznált szabad keret (mrd €)",
+        "Egyéb felhasználás a nem kötött NRPP-keretből (mrd €)",
         min_value=0.0,
         value=0.0,
         step=0.05,
@@ -775,38 +943,6 @@ dabis_gross_m = gross_dabis_eur.sum() / 1_000_000
 dabis_paid_m = paid_dabis_eur.sum() / 1_000_000
 dabis_reduction_m = (gross_dabis_eur.sum() - paid_dabis_eur.sum()) / 1_000_000
 
-yfs_area_ha = data["area_yfs_cur_eligible"].sum()
-young_budget_m = yfs_area_ha * young_topup / 1_000_000
-
-sfs_mask = (data["area_biss_criss"] > 0) & (data["area_biss_criss"] <= sfs_max_area)
-sfs_farms = int(sfs_mask.sum())
-sfs_budget_m = sfs_farms * sfs_flat / 1_000_000
-
-cis_rows = []
-
-for label, (column, unit) in CIS_COMPONENTS.items():
-    quantity = float(data[column].sum())
-    rate = cis_rates[label]
-    amount_m = quantity * rate / 1_000_000
-
-    ref = CIS_REFERENCE[label]
-
-    cis_rows.append(
-        {
-            "CIS komponens": label,
-            "Jogosult mennyiség": quantity,
-            "Egység": unit,
-            "Egységösszeg (€)": rate,
-            "2024 referencia (€)": ref["rate"],
-            "Referencia-boríték (M€)": ref["budget"] / 1_000_000,
-            "Boríték (M€)": amount_m,
-        }
-    )
-
-cis_table = pd.DataFrame(cis_rows)
-cis_budget_m = cis_table["Boríték (M€)"].sum()
-cis_reference_delta_m = cis_budget_m - CIS_CURRENT_M
-
 cis_reference_m = dabis_paid_m + young_budget_m + aec_eu_m + sfs_budget_m
 cis_max_m = cis_alpha * cis_reference_m
 cis_headroom_m = cis_max_m - cis_budget_m
@@ -843,6 +979,11 @@ cap_annual_eu_m = cap_income_support_annual_eu_m + cap_non_ring_annual_eu_m
 cap_income_support_7y_bn = cap_income_support_annual_eu_m * 7 / 1_000
 cap_non_ring_7y_bn = cap_non_ring_annual_eu_m * 7 / 1_000
 cap_7y_eu_bn = cap_annual_eu_m * 7 / 1_000
+
+cap_unallocated_bn = cap_total_bn - cap_7y_eu_bn
+cap_overrun_bn = max(-cap_unallocated_bn, 0.0)
+cap_unallocated_bn = max(cap_unallocated_bn, 0.0)
+cap_budget_valid = cap_overrun_bn <= 1e-9
 
 
 # ============================================================
@@ -1097,7 +1238,7 @@ ring_table = pd.DataFrame(
             "Kevésbé fejlett régiók",
             "Migration / Security",
             "Social Climate Fund",
-            "Non-ring-fenced kiinduló",
+            "Induló nem kötött NRPP-keret",
         ],
         "Minimum / earmark (mrd €)": [
             cap_min_bn,
@@ -1123,70 +1264,89 @@ ring_table = pd.DataFrame(
 # EXECUTIVE SUMMARY
 # ============================================================
 
-top1, top2, top3, top4, top5 = st.columns(5)
+top1, top2, top3, top4, top5, top6 = st.columns(6)
 
 top1.metric(
-    "CAP összesen 2028–2034",
+    "Tervezett CAP-keret",
+    eur_bn(cap_total_bn),
+)
+
+top2.metric(
+    "Allokált CAP",
     eur_bn(cap_7y_eu_bn),
     delta=f"income support: {signed_bn(cap_income_support_7y_bn - cap_min_bn)}",
 )
 
-top2.metric(
-    "Szabad NRPP maradvány",
+top3.metric(
+    "Még nem allokált CAP",
+    eur_bn(cap_unallocated_bn) if cap_budget_valid else f"−{eur_bn(cap_overrun_bn)}",
+    delta=None if cap_budget_valid else "kerettúllépés",
+    delta_color="off",
+)
+
+top4.metric(
+    "Fennmaradó nem kötött NRPP-keret",
     eur_bn(non_ring_remaining_bn),
 )
 
-top3.metric(
+top5.metric(
     "Magyar társfinanszírozás",
     eur_bn(hu_cofin_7y_bn),
 )
 
-top4.metric(
+top6.metric(
     "Zöld tracking",
     pct(nrpp_green_total_bn / nrpp_total_bn),
     delta=pct((nrpp_green_total_bn - nrpp_green_required_bn) / nrpp_total_bn),
 )
 
-top5.metric(
-    "CIS kihasználtság",
-    pct(cis_budget_m / cis_max_m) if cis_max_m > 0 else "—",
-)
-
-status_col1, status_col2, status_col3 = st.columns(3)
+status_col1, status_col2, status_col3, status_col4 = st.columns(4)
 
 with status_col1:
-    if cap_gap_bn > 0:
+    if cap_budget_valid:
         status_box(
-            f"<b>CAP minimum:</b> hiányzik {eur_bn(cap_gap_bn)}.",
-            "bad",
+            f"<b>CAP tervezési keret:</b> {eur_bn(cap_unallocated_bn)} még nem allokált.",
+            "good" if cap_unallocated_bn >= 0.25 else "warn",
         )
     else:
         status_box(
-            f"<b>CAP minimum:</b> teljesül, többlet {eur_bn(cap_extra_bn)}.",
-            "good",
+            f"<b>CAP tervezési keret:</b> túllépés {eur_bn(cap_overrun_bn)}.",
+            "bad",
         )
 
 with status_col2:
-    if non_ring_remaining_bn < 0:
+    if cap_gap_bn > 0:
         status_box(
-            f"<b>Szabad keret:</b> túlosztás {eur_bn(abs(non_ring_remaining_bn))}.",
+            f"<b>CAP income-support minimum:</b> hiányzik {eur_bn(cap_gap_bn)}.",
             "bad",
-        )
-    elif non_ring_remaining_bn < 0.5:
-        status_box(
-            f"<b>Szabad keret:</b> csak {eur_bn(non_ring_remaining_bn)} maradt.",
-            "warn",
         )
     else:
         status_box(
-            f"<b>Szabad keret:</b> {eur_bn(non_ring_remaining_bn)} maradt.",
+            f"<b>CAP income-support minimum:</b> teljesül, többlet {eur_bn(cap_extra_bn)}.",
             "good",
         )
 
 with status_col3:
+    if non_ring_remaining_bn < 0:
+        status_box(
+            f"<b>Nem kötött NRPP-keret:</b> túlosztás {eur_bn(abs(non_ring_remaining_bn))}.",
+            "bad",
+        )
+    elif non_ring_remaining_bn < 0.5:
+        status_box(
+            f"<b>Nem kötött NRPP-keret:</b> {eur_bn(non_ring_remaining_bn)} marad.",
+            "warn",
+        )
+    else:
+        status_box(
+            f"<b>Nem kötött NRPP-keret:</b> {eur_bn(non_ring_remaining_bn)} marad.",
+            "good",
+        )
+
+with status_col4:
     if nrpp_green_gap_bn > 0:
         status_box(
-            f"<b>Zöld cél:</b> hiányzik {eur_bn(nrpp_green_gap_bn)} tracking.",
+            f"<b>Zöld cél:</b> hiányzik {eur_bn(nrpp_green_gap_bn)} tracking-hozzájárulás.",
             "warn",
         )
     else:
@@ -1249,19 +1409,23 @@ with tab_overview:
                 "Mutató": [
                     "NRPP összesen",
                     "General allocation",
-                    "CAP income support minimum",
+                    "CAP income-support minimum",
+                    "Tervezett teljes CAP-keret",
                     "Modellezett CAP income support",
-                    "Modellezett CAP összesen",
+                    "Allokált CAP összesen",
+                    "Még nem allokált CAP",
                     "LDR minimum",
-                    "Kezdeti non-ring-fenced",
-                    "Szabad maradvány",
+                    "Induló nem kötött NRPP-keret",
+                    "Fennmaradó nem kötött NRPP-keret",
                 ],
                 "mrd €": [
                     nrpp_total_bn,
                     general_allocation_bn,
                     cap_min_bn,
+                    cap_total_bn,
                     cap_income_support_7y_bn,
                     cap_7y_eu_bn,
+                    cap_unallocated_bn if cap_budget_valid else -cap_overrun_bn,
                     ldr_min_bn,
                     initial_non_ring_bn,
                     non_ring_remaining_bn,
@@ -1333,13 +1497,21 @@ with tab_cap:
         )
 
     with cap_right:
-        st.markdown("#### CAP minimum")
+        st.markdown("#### CAP-keret és income-support minimum")
         st.metric(
             "CAP income support / 2028–2034",
             eur_bn(cap_income_support_7y_bn),
             delta=signed_bn(cap_income_support_7y_bn - cap_min_bn),
         )
-        st.caption(f"Teljes modellezett CAP: {eur_bn(cap_7y_eu_bn)}")
+        st.caption(
+            f"Tervezett teljes CAP-keret: {eur_bn(cap_total_bn)} · "
+            f"allokált CAP: {eur_bn(cap_7y_eu_bn)} · "
+            + (
+                f"még nem allokált: {eur_bn(cap_unallocated_bn)}"
+                if cap_budget_valid
+                else f"kerettúllépés: {eur_bn(cap_overrun_bn)}"
+            )
+        )
 
         st.metric(
             "CIS plafon",
@@ -1411,9 +1583,9 @@ with tab_ring:
     r1, r2, r3, r4 = st.columns(4)
 
     r1.metric("General allocation", eur_bn(general_allocation_bn))
-    r2.metric("Kezdeti szabad keret", eur_bn(initial_non_ring_bn))
-    r3.metric("CAP extra", eur_bn(cap_extra_bn))
-    r4.metric("Maradó szabad keret", eur_bn(non_ring_remaining_bn))
+    r2.metric("Induló nem kötött NRPP-keret", eur_bn(initial_non_ring_bn))
+    r3.metric("CAP minimum feletti rész", eur_bn(cap_extra_bn))
+    r4.metric("Fennmaradó nem kötött NRPP-keret", eur_bn(non_ring_remaining_bn))
 
     ring_left, ring_right = st.columns([1.2, 1])
 
@@ -1461,7 +1633,7 @@ with tab_ring:
             <div class="small-muted">
             A CAP income-support és az LDR itt minimumként viselkedik.
             A CAP-minimum feletti income-support, valamint a nem ring-fenced
-            CAP-beavatkozások a szabad/non-ring-fenced mozgásteret fogyasztják.
+            CAP-beavatkozások a nem kötött NRPP-keretből igényelnek további forrást.
             </div>
             """,
             unsafe_allow_html=True,
