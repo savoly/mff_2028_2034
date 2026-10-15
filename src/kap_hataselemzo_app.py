@@ -1,6 +1,5 @@
 import os
 import tempfile
-from io import BytesIO
 from pathlib import Path
 
 import matplotlib
@@ -82,7 +81,7 @@ def number(value: float, decimals: int = 0) -> str:
     return f"{value:,.{decimals}f}".replace(",", " ").replace(".", ",")
 
 
-@st.cache_data(show_spinner="2024-es üzemsoros állomány betöltése…")
+@st.cache_data(show_spinner="Üzemsoros állomány betöltése…")
 def load_local_data(year: int) -> pd.DataFrame:
     # Pontosan ugyanaz az adatbetöltő, mint a notebook első futtatott cellájában.
     return read_extended_base_data(year)
@@ -168,13 +167,19 @@ if "pending_dabis" in st.session_state:
 
 with st.sidebar:
     st.header("Forgatókönyv")
-    st.caption("Kiinduló értékek: 220 €/ha általános DABIS + 50 €/ha fiatal gazda")
+
+    base_year = st.selectbox(
+        "Bázisév",
+        options=[2024, 2025, 2026],
+        index=0,
+    )
+    st.caption("Kiinduló értékek: 90 €/ha általános DABIS + 50 €/ha fiatal gazda")
 
     dabis = st.number_input(
         "DABIS általános (€/ha)",
-        min_value=100.0,
-        max_value=500.0,
-        value=220.0,
+        min_value=90.0,
+        max_value=240.0,
+        value=90.0,
         step=5.0,
         key="dabis",
     )
@@ -258,7 +263,7 @@ with st.sidebar:
 
     st.divider()
     st.caption(
-        "A 2024-es BISS + CRISS + fiatal gazda támogatáshoz hasonlít. "
+        f"A {base_year}-es BISS + CRISS + fiatal gazda támogatáshoz hasonlít. "
         "Az AÖP és más támogatási elemek itt nem szerepelnek."
     )
 
@@ -286,7 +291,7 @@ policy_key = (
 )
 
 st.markdown(
-    '<div class="eyebrow">2024-ES BÁZIS · ÚJ KAP FORGATÓKÖNYV</div>',
+    f'<div class="eyebrow">{base_year}-ES BÁZIS · ÚJ KAP FORGATÓKÖNYV</div>',
     unsafe_allow_html=True,
 )
 st.markdown('<div class="title">KAP Hatáselemző</div>', unsafe_allow_html=True)
@@ -305,7 +310,15 @@ with farm_tab:
             "Üzemméret (ha)", min_value=0.1, max_value=10000.0, value=100.0, step=1.0
         )
     with b:
-        is_young = st.checkbox("Fiatal gazdálkodó", value=False)
+        farmer_type = st.segmented_control(
+            "Gazdálkodói státusz",
+            ["Nem fiatal", "Fiatal"],
+            default="Nem fiatal",
+            selection_mode="single",
+            width="stretch",
+        )
+
+        is_young = farmer_type == "Fiatal"
 
     # Az új támogatást a notebook compute_capped_subsidies függvénye számolja.
     farm = pd.DataFrame(
@@ -416,23 +429,13 @@ with farm_tab:
         )
 
 with data_tab:
-    st.subheader("2024-es üzemsoros állomány")
-    uploaded = st.file_uploader(
-        "Másik data_extended_2024.parquet betöltése (opcionális)",
-        type=["parquet"],
-        help="Távoli Streamlit telepítésnél a fájl a szerverre kerül.",
-    )
+    st.subheader(f"{base_year}-es üzemsoros állomány")
+
     try:
-        data = (
-            pd.read_parquet(BytesIO(uploaded.getvalue()))
-            if uploaded
-            else load_local_data(2024)
-        )
+        data = load_local_data(base_year)
     except (FileNotFoundError, OSError, ImportError, ValueError) as exc:
         data = None
-        st.info(
-            f"Nincs betöltött üzemsoros állomány ({exc}). Helyezd az input/data_extended_2024.parquet fájlt a projektbe, vagy töltsd fel itt."
-        )
+        st.info(f"A {base_year}-es üzemsoros állomány nem tölthető be ({exc}).")
 
     if data is not None:
         missing = required.difference(data.columns)
@@ -453,13 +456,10 @@ with data_tab:
             n_farms = int(eligible_farms.sum())
             eligible_area = float(data.loc[eligible_farms, "area_biss_criss"].sum())
 
-            st.caption(
-                f"2024-es bázis · "
-                f"{'feltöltött állomány' if uploaded else 'helyi állomány'}"
-            )
+            st.caption(f"{base_year}-es bázis · helyi állomány")
 
             # Bázis
-            st.markdown("#### 2024-es bázis")
+            st.markdown(f"#### {base_year}-es bázis")
             k1, k2, k3 = st.columns(3)
 
             k1.metric(
@@ -473,7 +473,7 @@ with data_tab:
             )
 
             k3.metric(
-                "2024-es támogatás",
+                f"{base_year}-es támogatás",
                 f"{number(total_current / 1e6, 2)} M€",
             )
 
@@ -495,6 +495,103 @@ with data_tab:
                 "Összes elvonás",
                 f"{number(total_reduction / 1e6, 2)} M€",
             )
+
+            # ------------------------------------------------------------
+            # Fiatal gazdálkodók: jelenlegi vs. új rendszer
+            # ------------------------------------------------------------
+            young_mask = data["area_yfs_cur_eligible"].fillna(0).gt(0)
+            n_young = int(young_mask.sum())
+
+            young_current = float(
+                data.loc[
+                    young_mask,
+                    ["subs_biss", "subs_redist", "subs_yfs"],
+                ]
+                .sum()
+                .sum()
+            )
+
+            young_new = float(
+                scenario.loc[
+                    young_mask,
+                    "subs_capped",
+                ].sum()
+            )
+
+            young_change = young_new - young_current
+            young_change_pct = (
+                100 * young_change / young_current if young_current > 0 else np.nan
+            )
+
+            st.markdown("#### Fiatal gazdálkodók")
+            st.caption(
+                "Azok a gazdaságok tartoznak ide, amelyeknél a "
+                "fiatalgazda-jogosult terület nagyobb mint 0 ha."
+            )
+
+            y1, y2, y3, y4 = st.columns(4)
+
+            y1.metric(
+                "Fiatal gazdák száma",
+                f"{number(n_young)} db",
+            )
+
+            y2.metric(
+                "Jelenlegi támogatás",
+                f"{number(young_current / 1e6, 2)} M€",
+            )
+
+            y3.metric(
+                "Új DABIS",
+                f"{number(young_new / 1e6, 2)} M€",
+            )
+
+            y4.metric(
+                "Változás",
+                f"{number(young_change / 1e6, 2)} M€",
+                delta=(
+                    f"{number(young_change_pct, 1)} %"
+                    if np.isfinite(young_change_pct)
+                    else None
+                ),
+            )
+
+            with st.expander("Fiatalgazda-komponens részletei"):
+                current_yfs_component = float(
+                    data.loc[
+                        young_mask,
+                        "subs_yfs",
+                    ].sum()
+                )
+
+                new_yfs_gross_component = float(
+                    (
+                        data.loc[
+                            young_mask,
+                            "area_yfs_cur_eligible",
+                        ]
+                        * yfs
+                    ).sum()
+                )
+
+                yc1, yc2 = st.columns(2)
+
+                yc1.metric(
+                    "Jelenlegi fiatalgazda-támogatás",
+                    f"{number(current_yfs_component / 1e6, 2)} M€",
+                )
+
+                yc2.metric(
+                    "Új fiatalgazda-komponens – bruttó",
+                    f"{number(new_yfs_gross_component / 1e6, 2)} M€",
+                )
+
+                st.caption(
+                    "Az új fiatalgazda-komponens bruttó érték: "
+                    "a degresszió és a capping az összesített bruttó "
+                    "DABIS-ra kerül alkalmazásra, ezért a komponens "
+                    "nettó része önmagában nem különíthető el egyértelműen."
+                )
 
             with st.expander("DABIS-ráta meghatározása bruttó keretből"):
                 target = st.number_input(
@@ -703,11 +800,11 @@ with data_tab:
             st.download_button(
                 "Méretkategóriás táblázat letöltése",
                 detail.to_csv(sep=";").encode("utf-8-sig"),
-                file_name="kap_meretkategoria_2024.csv",
+                file_name=f"kap_meretkategoria_{base_year}.csv",
                 mime="text/csv",
             )
 
-            with st.expander("Jogosultak és területek a 2024-es bázisban"):
+            with st.expander(f"Jogosultak és területek a {base_year}-es bázisban"):
                 st.dataframe(
                     compute_dabis_support_summary(data),
                     hide_index=True,

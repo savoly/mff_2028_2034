@@ -304,7 +304,7 @@ def generate_extended_base_data(base_year: int, engine: Engine) -> pd.DataFrame:
                 teruletalapu_alaptamogatas
             FROM ek_adatok.tera
             WHERE
-                ev =:base_year
+                ev = :base_year
                 AND teruletalapu_alaptamogatas = 1
                 AND tam_nem_ig = 0
                 AND terulet_elf > 0
@@ -326,73 +326,332 @@ def generate_extended_base_data(base_year: int, engine: Engine) -> pd.DataFrame:
                 tk_ipari_zoldseg,
                 tk_zoldsegnoveny,
                 tk_rizs,
-                NULL as teruletalapu_alaptamogatas
+                NULL AS teruletalapu_alaptamogatas
             FROM ek_adatok.masodvetes
-            WHERE ev =:base_year AND terulet_elf > 0
+            WHERE
+                ev = :base_year
+                AND terulet_elf > 0
         ),
 
+        -- Első aggregálás:
+        -- BISS és növényi CIS esetén csak a legalább 0,25 ha-os táblák
+        -- számítanak bele.
+        tbl_noveny_raw AS (
+            SELECT
+                regszam,
+
+                SUM(
+                    CASE
+                        WHEN teruletalapu_alaptamogatas = 1
+                             AND terulet_elf >= 0.25
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_biss_criss,
+
+                SUM(
+                    CASE
+                        WHEN fiatal_mgi_termelo = 1
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_yfs,
+
+                SUM(
+                    CASE
+                        WHEN aop = 1
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_aop,
+
+                SUM(
+                    CASE
+                        WHEN vp_akg_2021 = 1
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_vp_akg_2021,
+
+                SUM(
+                    CASE
+                        WHEN tk_cukorrepa = 1
+                             AND terulet_elf >= 0.25
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_tk_cukorrepa,
+
+                SUM(
+                    CASE
+                        WHEN tk_szemes_feherjenoveny = 1
+                             AND terulet_elf >= 0.25
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_tk_szemes_feherjenoveny,
+
+                SUM(
+                    CASE
+                        WHEN tk_szalas_feherjenoveny = 1
+                             AND terulet_elf >= 0.25
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_tk_szalas_feherjenoveny,
+
+                SUM(
+                    CASE
+                        WHEN tk_extenziv_gyumolcs = 1
+                             AND terulet_elf >= 0.25
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_tk_extenziv_gyumolcs,
+
+                SUM(
+                    CASE
+                        WHEN tk_intenziv_gyumolcs = 1
+                             AND terulet_elf >= 0.25
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_tk_intenziv_gyumolcs,
+
+                SUM(
+                    CASE
+                        WHEN tk_ipari_olajnoveny = 1
+                             AND terulet_elf >= 0.25
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_tk_ipari_olajnoveny,
+
+                SUM(
+                    CASE
+                        WHEN tk_ipari_zoldseg = 1
+                             AND terulet_elf >= 0.25
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_tk_ipari_zoldsegnoveny,
+
+                SUM(
+                    CASE
+                        WHEN tk_zoldsegnoveny = 1
+                             AND terulet_elf >= 0.25
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_tk_zoldsegnoveny,
+
+                SUM(
+                    CASE
+                        WHEN tk_rizs = 1
+                             AND terulet_elf >= 0.25
+                        THEN terulet_elf
+                        ELSE 0
+                    END
+                ) AS area_tk_rizs
+
+            FROM alap_tabla
+            GROUP BY regszam
+        ),
+
+        -- Jogosultsági minimumok alkalmazása
         tbl_noveny AS (
             SELECT
                 regszam,
-                SUM(CASE WHEN teruletalapu_alaptamogatas = 1 THEN terulet_elf ELSE 0 END) AS area_biss_criss,
-                SUM(CASE WHEN fiatal_mgi_termelo = 1 THEN terulet_elf ELSE 0 END) AS area_yfs,
-                SUM(CASE WHEN aop = 1 THEN terulet_elf ELSE 0 END) AS area_aop,
-                SUM(CASE WHEN vp_akg_2021 = 1 THEN terulet_elf ELSE 0 END) AS area_vp_akg_2021,
-                SUM(CASE WHEN tk_cukorrepa = 1 THEN terulet_elf ELSE 0 END) AS area_tk_cukorrepa,
-                SUM(CASE WHEN tk_szemes_feherjenoveny = 1 THEN terulet_elf ELSE 0 END) AS area_tk_szemes_feherjenoveny,
-                SUM(CASE WHEN tk_szalas_feherjenoveny = 1 THEN terulet_elf ELSE 0 END) AS area_tk_szalas_feherjenoveny,
-                SUM(CASE WHEN tk_extenziv_gyumolcs = 1 THEN terulet_elf ELSE 0 END) AS area_tk_extenziv_gyumolcs,
-                SUM(CASE WHEN tk_intenziv_gyumolcs = 1 THEN terulet_elf ELSE 0 END) AS area_tk_intenziv_gyumolcs,
-                SUM(CASE WHEN tk_ipari_olajnoveny = 1 THEN terulet_elf ELSE 0 END) AS area_tk_ipari_olajnoveny,
-                SUM(CASE WHEN tk_ipari_zoldseg = 1 THEN terulet_elf ELSE 0 END) AS area_tk_ipari_zoldsegnoveny,
-                SUM(CASE WHEN tk_zoldsegnoveny = 1 THEN terulet_elf ELSE 0 END) AS area_tk_zoldsegnoveny,
-                SUM(CASE WHEN tk_rizs = 1 THEN terulet_elf ELSE 0 END) AS area_tk_rizs
-            FROM alap_tabla
-            GROUP BY regszam
+
+                -- BISS: legalább 1 ha jogosult terület
+                CASE
+                    WHEN area_biss_criss >= 1
+                    THEN area_biss_criss
+                    ELSE 0
+                END AS area_biss_criss,
+
+                area_yfs,
+                area_aop,
+                area_vp_akg_2021,
+
+                -- CIS: cukorrépa, fehérjenövények, ipari olajnövény,
+                -- ipari zöldség és rizs: legalább 1 ha
+                CASE
+                    WHEN area_biss_criss >= 1
+                         AND area_tk_cukorrepa >= 1
+                    THEN area_tk_cukorrepa
+                    ELSE 0
+                END AS area_tk_cukorrepa,
+
+                CASE
+                    WHEN area_biss_criss >= 1
+                         AND area_tk_szemes_feherjenoveny >= 1
+                    THEN area_tk_szemes_feherjenoveny
+                    ELSE 0
+                END AS area_tk_szemes_feherjenoveny,
+
+                CASE
+                    WHEN area_biss_criss >= 1
+                         AND area_tk_szalas_feherjenoveny >= 1
+                    THEN area_tk_szalas_feherjenoveny
+                    ELSE 0
+                END AS area_tk_szalas_feherjenoveny,
+
+                CASE
+                    WHEN area_biss_criss >= 1
+                         AND area_tk_ipari_olajnoveny >= 1
+                    THEN area_tk_ipari_olajnoveny
+                    ELSE 0
+                END AS area_tk_ipari_olajnoveny,
+
+                CASE
+                    WHEN area_biss_criss >= 1
+                         AND area_tk_ipari_zoldsegnoveny >= 1
+                    THEN area_tk_ipari_zoldsegnoveny
+                    ELSE 0
+                END AS area_tk_ipari_zoldsegnoveny,
+
+                CASE
+                    WHEN area_biss_criss >= 1
+                         AND area_tk_rizs >= 1
+                    THEN area_tk_rizs
+                    ELSE 0
+                END AS area_tk_rizs,
+
+                -- CIS: zöldség és gyümölcs: legalább 0,3 ha
+                -- FIGYELEM: jogszabály szerint kultúránként értendő.
+                CASE
+                    WHEN area_biss_criss >= 1
+                         AND area_tk_zoldsegnoveny >= 0.3
+                    THEN area_tk_zoldsegnoveny
+                    ELSE 0
+                END AS area_tk_zoldsegnoveny,
+
+                CASE
+                    WHEN area_biss_criss >= 1
+                         AND area_tk_extenziv_gyumolcs >= 0.3
+                    THEN area_tk_extenziv_gyumolcs
+                    ELSE 0
+                END AS area_tk_extenziv_gyumolcs,
+
+                CASE
+                    WHEN area_biss_criss >= 1
+                         AND area_tk_intenziv_gyumolcs >= 0.3
+                    THEN area_tk_intenziv_gyumolcs
+                    ELSE 0
+                END AS area_tk_intenziv_gyumolcs
+
+            FROM tbl_noveny_raw
         ),
 
         tbl_allat AS (
             SELECT
                 regszam,
-                SUM(CASE WHEN allat_tip = 'hízottbika' THEN letszam_ig ELSE 0 END) AS count_tk_hizottbika,
-                SUM(CASE WHEN allat_tip = 'anyajuh' THEN letszam_ig ELSE 0 END) AS count_tk_anyajuh,
-                SUM(CASE WHEN allat_tip = 'tejhasznú tehén' THEN letszam_ig ELSE 0 END) AS count_tk_tejhasznu_tehen,
-                SUM(CASE WHEN allat_tip = 'anyatehén' THEN letszam_ig ELSE 0 END) AS count_tk_anyatehen
+
+                SUM(
+                    CASE
+                        WHEN allat_tip = 'hízottbika'
+                        THEN letszam_ig
+                        ELSE 0
+                    END
+                ) AS count_tk_hizottbika,
+
+                SUM(
+                    CASE
+                        WHEN allat_tip = 'anyajuh'
+                        THEN letszam_ig
+                        ELSE 0
+                    END
+                ) AS count_tk_anyajuh,
+
+                SUM(
+                    CASE
+                        WHEN allat_tip = 'tejhasznú tehén'
+                        THEN letszam_ig
+                        ELSE 0
+                    END
+                ) AS count_tk_tejhasznu_tehen,
+
+                SUM(
+                    CASE
+                        WHEN allat_tip = 'anyatehén'
+                        THEN letszam_ig
+                        ELSE 0
+                    END
+                ) AS count_tk_anyatehen
+
             FROM mvh_tk_kozv.tam_allat
             WHERE
-                ev =:base_year
+                ev = :base_year
                 AND allat_tip IN (
-                    'hízottbika', 'anyajuh', 'tejhasznú tehén', 'anyatehén'
+                    'hízottbika',
+                    'anyajuh',
+                    'tejhasznú tehén',
+                    'anyatehén'
                 )
             GROUP BY regszam
         )
 
         SELECT
             COALESCE(tbl_noveny.regszam, tbl_allat.regszam) AS regszam,
+
             COALESCE(tbl_noveny.area_biss_criss, 0) AS area_biss_criss,
             COALESCE(tbl_noveny.area_yfs, 0) AS area_yfs,
             COALESCE(tbl_noveny.area_aop, 0) AS area_aop,
             COALESCE(tbl_noveny.area_vp_akg_2021, 0) AS area_vp_akg_2021,
-            COALESCE(tbl_noveny.area_tk_cukorrepa, 0) AS area_tk_cukorrepa,
-            COALESCE(tbl_noveny.area_tk_szemes_feherjenoveny, 0) AS area_tk_szemes_feherjenoveny,
-            COALESCE(tbl_noveny.area_tk_szalas_feherjenoveny, 0) AS area_tk_szalas_feherjenoveny,
-            COALESCE(tbl_noveny.area_tk_extenziv_gyumolcs, 0) AS area_tk_extenziv_gyumolcs,
-            COALESCE(tbl_noveny.area_tk_intenziv_gyumolcs, 0) AS area_tk_intenziv_gyumolcs,
-            COALESCE(tbl_noveny.area_tk_ipari_olajnoveny, 0) AS area_tk_ipari_olajnoveny,
-            COALESCE(tbl_noveny.area_tk_ipari_zoldsegnoveny, 0) AS area_tk_ipari_zoldsegnoveny,
-            COALESCE(tbl_noveny.area_tk_zoldsegnoveny, 0) AS area_tk_zoldsegnoveny,
-            COALESCE(tbl_noveny.area_tk_rizs, 0) AS area_tk_rizs,
-            COALESCE(tbl_allat.count_tk_hizottbika, 0) AS count_tk_hizottbika,
-            COALESCE(tbl_allat.count_tk_anyatehen, 0) AS count_tk_anyatehen,
-            COALESCE(tbl_allat.count_tk_tejhasznu_tehen, 0) AS count_tk_tejhasznu_tehen,
-            COALESCE(tbl_allat.count_tk_anyajuh, 0) AS count_tk_anyajuh
+
+            COALESCE(tbl_noveny.area_tk_cukorrepa, 0)
+                AS area_tk_cukorrepa,
+
+            COALESCE(tbl_noveny.area_tk_szemes_feherjenoveny, 0)
+                AS area_tk_szemes_feherjenoveny,
+
+            COALESCE(tbl_noveny.area_tk_szalas_feherjenoveny, 0)
+                AS area_tk_szalas_feherjenoveny,
+
+            COALESCE(tbl_noveny.area_tk_extenziv_gyumolcs, 0)
+                AS area_tk_extenziv_gyumolcs,
+
+            COALESCE(tbl_noveny.area_tk_intenziv_gyumolcs, 0)
+                AS area_tk_intenziv_gyumolcs,
+
+            COALESCE(tbl_noveny.area_tk_ipari_olajnoveny, 0)
+                AS area_tk_ipari_olajnoveny,
+
+            COALESCE(tbl_noveny.area_tk_ipari_zoldsegnoveny, 0)
+                AS area_tk_ipari_zoldsegnoveny,
+
+            COALESCE(tbl_noveny.area_tk_zoldsegnoveny, 0)
+                AS area_tk_zoldsegnoveny,
+
+            COALESCE(tbl_noveny.area_tk_rizs, 0)
+                AS area_tk_rizs,
+
+            COALESCE(tbl_allat.count_tk_hizottbika, 0)
+                AS count_tk_hizottbika,
+
+            COALESCE(tbl_allat.count_tk_anyatehen, 0)
+                AS count_tk_anyatehen,
+
+            COALESCE(tbl_allat.count_tk_tejhasznu_tehen, 0)
+                AS count_tk_tejhasznu_tehen,
+
+            COALESCE(tbl_allat.count_tk_anyajuh, 0)
+                AS count_tk_anyajuh
+
         FROM tbl_noveny
-        FULL JOIN tbl_allat ON tbl_noveny.regszam = tbl_allat.regszam;
+
+        FULL JOIN tbl_allat
+            ON tbl_noveny.regszam = tbl_allat.regszam;
     """)
 
-    data = pd.read_sql(sql, con=engine, params={"base_year": base_year})
+    data = pd.read_sql(
+        sql,
+        engine,
+        params={"base_year": base_year},
+    )
 
-    if base_year == 2024:
+    if base_year in [2024, 2025, 2026]:
         yfs_data = pd.read_excel(
             "input/2024EK Feldolgozás bizonylatok 2023-2027 Területalapú kérelem soros analitika DP03-BISS.xlsx",
             engine="calamine",
