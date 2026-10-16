@@ -41,6 +41,17 @@ class PolicyParams:
     dabis_policy: DabisPolicy = DEFAULT_DABIS_POLICY
 
 
+def plot_paid_support(gross, x_values, policy: PolicyParams) -> np.ndarray:
+    """Apply degressivity and capping excluding YFS when requested."""
+    yfs = policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
+    exempt = yfs if policy.dabis_policy.exclude_young_farmer else 0.0
+    taxable = np.asarray(gross, dtype=float) - exempt
+    return (
+        apply_reductions_vec(pd.Series(taxable), policy.dabis_policy).to_numpy()
+        + exempt
+    )
+
+
 def _plot_gross_upper(policy: PolicyParams) -> float:
     cap_trigger = gross_at_payment_cap(policy.dabis_policy)
     if cap_trigger is not None and np.isfinite(cap_trigger):
@@ -92,7 +103,7 @@ def _thresholds_in_ha(
         gross_thresholds,
         policy.base_payment_per_ha,
         policy.redist_params,
-        policy.yfs_per_ha,
+        0.0 if policy.dabis_policy.exclude_young_farmer else policy.yfs_per_ha,
     )
     return list(zip(hectares, [label for _, label in items], strict=True))
 
@@ -117,10 +128,7 @@ def plot_per_ha(
         + cal_redist_vec(x_values, policy.redist_params)
     )
 
-    y_values_capping_per_ha = (
-        apply_reductions_vec(pd.Series(gross), policy.dabis_policy).to_numpy()
-        / x_values
-    )
+    y_values_capping_per_ha = plot_paid_support(gross, x_values, policy) / x_values
 
     y_values_current_per_ha = (
         np.array([compute_current_support(x, policy.yfs_per_ha) for x in x_values])
@@ -283,9 +291,7 @@ def plot_total(
         + cal_redist_vec(x_values, policy.redist_params)
     )
 
-    y_values_capping = apply_reductions_vec(
-        pd.Series(gross), policy.dabis_policy
-    ).to_numpy()
+    y_values_capping = plot_paid_support(gross, x_values, policy)
 
     y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
 
@@ -440,9 +446,7 @@ def plot_diff_dual_axis(
         + cal_redist_vec(x_values, policy.redist_params)
     )
 
-    y_values_capping = apply_reductions_vec(
-        pd.Series(gross), policy.dabis_policy
-    ).to_numpy()
+    y_values_capping = plot_paid_support(gross, x_values, policy)
 
     y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
 
@@ -451,25 +455,28 @@ def plot_diff_dual_axis(
         for cap, curr in zip(y_values_capping, y_values_current)
     ]
 
-    # Maximum
-    peak_x = maximize_ratio(
-        50,
-        policy.base_payment_per_ha,
-        policy.yfs_per_ha,
-        policy.redist_params,
-        policy.dabis_policy,
-    )
+    # Maximum (under exemption, use exactly the displayed support curve).
+    if policy.dabis_policy.exclude_young_farmer:
+        peak_idx = int(np.nanargmax(diff_pct))
+        peak_x = float(x_values[peak_idx])
+        peak_y = float(diff_pct[peak_idx])
+    else:
+        peak_x = maximize_ratio(
+            50,
+            policy.base_payment_per_ha,
+            policy.yfs_per_ha,
+            policy.redist_params,
+            policy.dabis_policy,
+        )
+        peak_y = 100 * calc_ratio_subs(
+            peak_x,
+            policy.base_payment_per_ha,
+            policy.yfs_per_ha,
+            policy.redist_params,
+            policy.dabis_policy,
+        )
 
     peak_x_rounded = int(c_round(peak_x, 0))
-
-    peak_y = 100 * calc_ratio_subs(
-        peak_x,
-        policy.base_payment_per_ha,
-        policy.yfs_per_ha,
-        policy.redist_params,
-        policy.dabis_policy,
-    )
-
     peak_y_rounded = c_round(peak_y, 2)
 
     # Equality points
@@ -824,9 +831,7 @@ def plot_reduction(
         + cal_redist_vec(x_values, policy.redist_params)
     )
 
-    y_values_capping = apply_reductions_vec(
-        pd.Series(gross), policy.dabis_policy
-    ).to_numpy()
+    y_values_capping = plot_paid_support(gross, x_values, policy)
 
     percent_diff = (
         np.divide(
@@ -881,9 +886,7 @@ def plot_diff_pct(
         + cal_redist_vec(x_values, policy.redist_params)
     )
 
-    y_values_capping = apply_reductions_vec(
-        pd.Series(gross), policy.dabis_policy
-    ).to_numpy()
+    y_values_capping = plot_paid_support(gross, x_values, policy)
 
     y_values_current = np.asarray(
         [compute_current_support(x, policy.yfs_per_ha) for x in x_values],

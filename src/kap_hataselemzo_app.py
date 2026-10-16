@@ -1,5 +1,6 @@
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import matplotlib
@@ -10,7 +11,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from mff.dabis_engine import DabisPolicy, DegressionBand, gross_at_payment_cap
+from mff.dabis_engine import gross_at_payment_cap
 from mff.new_cap import (
     compute_capped_subsidies,
     compute_current_support,
@@ -22,11 +23,19 @@ from mff.new_cap import (
 )
 from mff.plots import (
     PolicyParams,
-    calc_support_summary_by_area_class,
     plot_diff_pct,
     plot_per_ha,
     plot_reduction,
     plot_total,
+)
+from mff.scenario import ScenarioConfig, calculate_scenario
+from mff.summaries import (
+    AREA_BINS,
+    YOUNG_FARMER_EXAMPLE_MAX_HA,
+    build_reduction_table,
+    summarize_by_area_class,
+    summarize_example_farms,
+    summarize_young_farmers,
 )
 
 
@@ -83,40 +92,21 @@ def number(value: float, decimals: int = 0) -> str:
 
 @st.cache_data(show_spinner="Üzemsoros állomány betöltése…")
 def load_local_data(year: int) -> pd.DataFrame:
-    # Pontosan ugyanaz az adatbetöltő, mint a notebook első futtatott cellájában.
     return read_extended_base_data(year)
 
 
 @st.cache_data(show_spinner="Ábra készítése a plots.py függvényeivel…")
 def notebook_plot(
     kind: str,
-    dabis: float,
-    yfs: float,
-    redist: tuple[float, float],
+    config: ScenarioConfig,
     is_young: bool,
-    band_1: float,
-    band_2: float,
-    band_3: float,
-    rate_20_50: float,
-    rate_50_75: float,
-    rate_75_plus: float,
-    payment_cap: float | None,
 ) -> bytes:
     """A plots.py függvényének mentett PNG-jét adja át a Streamlitnek."""
-    dabis_policy = DabisPolicy(
-        bands=(
-            DegressionBand(0, band_1, 0.0, "band_1"),
-            DegressionBand(band_1, band_2, rate_20_50, "band_2"),
-            DegressionBand(band_2, band_3, rate_50_75, "band_3"),
-            DegressionBand(band_3, None, rate_75_plus, "band_4"),
-        ),
-        payment_cap=payment_cap,
-    )
     policy = PolicyParams(
-        base_payment_per_ha=dabis,
-        yfs_per_ha=yfs if is_young else 0,
-        redist_params=redist,
-        dabis_policy=dabis_policy,
+        base_payment_per_ha=config.dabis_per_ha,
+        yfs_per_ha=config.yfs_per_ha if is_young else 0,
+        redist_params=config.redistributive_per_ha,
+        dabis_policy=config.policy,
     )
     group = "fiatal gazdálkodó" if is_young else "nem fiatal gazdálkodó"
     old_label = "BISS+CRISS+CIS-YF" if is_young else "BISS+CRISS"
@@ -220,6 +210,12 @@ with st.sidebar:
         rate_50_75_pct = st.slider("3. sáv elvonása", 0, 100, 50, 5, format="%d%%")
         rate_75_plus_pct = st.slider("4. sáv elvonása", 0, 100, 75, 5, format="%d%%")
 
+        exclude_young_farmer = st.toggle(
+            "Fiatalgazda-többlettámogatás kivonása az elvonási alapból",
+            value=False,
+            help="A fiatalgazda-kiegészítés nem számít bele a degresszió és a plafon alapjába, de teljes egészében kifizetésre kerül.",
+        )
+
         cap_enabled = st.toggle("Kifizetési plafon", value=True)
         cap_value = st.number_input(
             "Plafon (€ / üzem)",
@@ -239,17 +235,18 @@ with st.sidebar:
         rate_75_plus = rate_75_plus_pct / 100
         payment_cap = cap_value if cap_enabled else None
 
-        dabis_policy = DabisPolicy(
-            bands=(
-                DegressionBand(0, band_1, 0.0, "band_1"),
-                DegressionBand(band_1, band_2, rate_20_50, "band_2"),
-                DegressionBand(band_2, band_3, rate_50_75, "band_3"),
-                DegressionBand(band_3, None, rate_75_plus, "band_4"),
-            ),
+        config = ScenarioConfig(
+            year=base_year,
+            dabis_per_ha=dabis,
+            yfs_per_ha=yfs,
+            redistributive_per_ha=(0.0, 0.0),
+            thresholds=(band_1, band_2, band_3),
+            rates=(rate_20_50, rate_50_75, rate_75_plus),
             payment_cap=payment_cap,
+            exclude_young_farmer=exclude_young_farmer,
         )
 
-        cap_trigger = gross_at_payment_cap(dabis_policy)
+        cap_trigger = gross_at_payment_cap(config.policy)
         if payment_cap is None:
             st.caption("A capping ki van kapcsolva.")
         elif cap_trigger is None:
@@ -268,8 +265,7 @@ with st.sidebar:
     )
 
 
-redist = (0.0, 0.0)
-bins = [0, 10, 150, 300, 1200, float("inf")]
+bins = AREA_BINS
 labels = generate_labels_from_bins(bins)
 required = {
     "area_biss_criss",
@@ -278,17 +274,6 @@ required = {
     "subs_redist",
     "subs_yfs",
 }
-policy_key = (
-    yfs,
-    redist,
-    band_1,
-    band_2,
-    band_3,
-    rate_20_50,
-    rate_50_75,
-    rate_75_plus,
-    payment_cap,
-)
 
 st.markdown(
     f'<div class="eyebrow">{base_year}-ES BÁZIS · ÚJ KAP FORGATÓKÖNYV</div>',
@@ -320,14 +305,21 @@ with farm_tab:
 
         is_young = farmer_type == "Fiatal"
 
-    # Az új támogatást a notebook compute_capped_subsidies függvénye számolja.
     farm = pd.DataFrame(
         {
             "area_biss_criss": [area],
-            "area_yfs_cur_eligible": [min(area, 300) if is_young else 0],
+            "area_yfs_cur_eligible": [
+                min(area, YOUNG_FARMER_EXAMPLE_MAX_HA) if is_young else 0
+            ],
         }
     )
-    farm_new = compute_capped_subsidies(farm, dabis, yfs, redist, dabis_policy).iloc[0]
+    farm_new = compute_capped_subsidies(
+        farm,
+        config.dabis_per_ha,
+        config.yfs_per_ha,
+        config.redistributive_per_ha,
+        config.policy,
+    ).iloc[0]
     farm_current = compute_current_support(area, is_young)
     m1, m2, m3 = st.columns(3)
     m1.metric("Jelenlegi támogatás", f"{number(farm_current)} €")
@@ -345,7 +337,7 @@ with farm_tab:
         ["Fajlagos támogatás", "Összes támogatás", "Százalékos eltérés", "Degresszió"],
         horizontal=True,
     )
-    if is_young and yfs == 0 and chart_kind != "Degresszió":
+    if is_young and config.yfs_per_ha == 0 and chart_kind != "Degresszió":
         st.warning(
             "A plots.py az új fiatal gazda ráta előjeléből következtet a jelenlegi fiatal státuszra. Nulla új ráta mellett ez az ábra félrevezető lenne; az üzemszintű kártyák továbbra is helyesek."
         )
@@ -354,17 +346,8 @@ with farm_tab:
             st.image(
                 notebook_plot(
                     chart_kind,
-                    dabis,
-                    yfs,
-                    redist,
+                    config,
                     is_young,
-                    band_1,
-                    band_2,
-                    band_3,
-                    rate_20_50,
-                    rate_50_75,
-                    rate_75_plus,
-                    payment_cap,
                 ),
                 width="stretch",
             )
@@ -372,38 +355,7 @@ with farm_tab:
             st.warning(f"Az ábra ezekkel a paraméterekkel nem készíthető el: {exc}")
 
     with st.expander("Jellemző üzemméretek"):
-        areas = np.array([5, 10, 50, 100, 150, 300, 500, 1200, 1500])
-
-        examples = pd.DataFrame(
-            {
-                "area_biss_criss": areas,
-                "area_yfs_cur_eligible": np.minimum(areas, 300) if is_young else 0,
-            }
-        )
-
-        examples_new = compute_capped_subsidies(
-            examples,
-            dabis,
-            yfs,
-            redist,
-            dabis_policy,
-        )
-
-        overview = pd.DataFrame(
-            {
-                "Üzemméret (ha)": areas,
-                "Jelenlegi (€)": [
-                    compute_current_support(area, is_young) for area in areas
-                ],
-                "Új (€)": examples_new["subs_capped"].to_numpy(),
-            }
-        )
-
-        overview["Változás (€)"] = overview["Új (€)"] - overview["Jelenlegi (€)"]
-
-        overview["Változás (%)"] = (
-            100 * overview["Változás (€)"] / overview["Jelenlegi (€)"]
-        )
+        overview = summarize_example_farms(config, is_young)
 
         styled_overview = (
             overview.style.format(
@@ -444,37 +396,27 @@ with data_tab:
                 f"A notebook API-jához szükséges oszlopok hiányoznak: {', '.join(sorted(missing))}"
             )
         else:
-            total_current = float(
-                data[["subs_biss", "subs_redist", "subs_yfs"]].sum().sum()
-            )
-            scenario = compute_capped_subsidies(data, dabis, yfs, redist, dabis_policy)
-            total_gross = float(scenario["subs_eur"].sum())
-            total_new = float(scenario["subs_capped"].sum())
-            total_reduction = float(scenario["subs_total_reduction"].sum())
-
-            eligible_farms = data["area_biss_criss"].fillna(0).gt(0)
-            n_farms = int(eligible_farms.sum())
-            eligible_area = float(data.loc[eligible_farms, "area_biss_criss"].sum())
+            results = calculate_scenario(data, config)
+            scenario = results.new
 
             st.caption(f"{base_year}-es bázis · helyi állomány")
 
-            # Bázis
             st.markdown(f"#### {base_year}-es bázis")
             k1, k2, k3 = st.columns(3)
 
             k1.metric(
                 "Üzemszám",
-                f"{number(n_farms)} db",
+                f"{number(results.eligible_farms)} db",
             )
 
             k2.metric(
                 "Jogosult terület",
-                f"{number(eligible_area)} ha",
+                f"{number(results.eligible_area)} ha",
             )
 
             k3.metric(
                 f"{base_year}-es támogatás",
-                f"{number(total_current / 1e6, 2)} M€",
+                f"{number(results.total_current / 1e6, 2)} M€",
             )
 
             # Forgatókönyv
@@ -483,45 +425,23 @@ with data_tab:
 
             k4.metric(
                 "Bruttó DABIS",
-                f"{number(total_gross / 1e6, 2)} M€",
+                f"{number(results.total_gross / 1e6, 2)} M€",
             )
 
             k5.metric(
                 "Kifizetett DABIS",
-                f"{number(total_new / 1e6, 2)} M€",
+                f"{number(results.total_paid / 1e6, 2)} M€",
             )
 
             k6.metric(
                 "Összes elvonás",
-                f"{number(total_reduction / 1e6, 2)} M€",
+                f"{number(results.total_reduction / 1e6, 2)} M€",
             )
 
             # ------------------------------------------------------------
             # Fiatal gazdálkodók: jelenlegi vs. új rendszer
             # ------------------------------------------------------------
-            young_mask = data["area_yfs_cur_eligible"].fillna(0).gt(0)
-            n_young = int(young_mask.sum())
-
-            young_current = float(
-                data.loc[
-                    young_mask,
-                    ["subs_biss", "subs_redist", "subs_yfs"],
-                ]
-                .sum()
-                .sum()
-            )
-
-            young_new = float(
-                scenario.loc[
-                    young_mask,
-                    "subs_capped",
-                ].sum()
-            )
-
-            young_change = young_new - young_current
-            young_change_pct = (
-                100 * young_change / young_current if young_current > 0 else np.nan
-            )
+            young = summarize_young_farmers(results, config)
 
             st.markdown("#### Fiatal gazdálkodók")
             st.caption(
@@ -533,65 +453,54 @@ with data_tab:
 
             y1.metric(
                 "Fiatal gazdák száma",
-                f"{number(n_young)} db",
+                f"{number(young.farms)} db",
             )
 
             y2.metric(
                 "Jelenlegi támogatás",
-                f"{number(young_current / 1e6, 2)} M€",
+                f"{number(young.current / 1e6, 2)} M€",
             )
 
             y3.metric(
                 "Új DABIS",
-                f"{number(young_new / 1e6, 2)} M€",
+                f"{number(young.new / 1e6, 2)} M€",
             )
 
             y4.metric(
                 "Változás",
-                f"{number(young_change / 1e6, 2)} M€",
+                f"{number(young.change / 1e6, 2)} M€",
                 delta=(
-                    f"{number(young_change_pct, 1)} %"
-                    if np.isfinite(young_change_pct)
+                    f"{number(young.change_pct, 1)} %"
+                    if np.isfinite(young.change_pct)
                     else None
                 ),
             )
 
             with st.expander("Fiatalgazda-komponens részletei"):
-                current_yfs_component = float(
-                    data.loc[
-                        young_mask,
-                        "subs_yfs",
-                    ].sum()
-                )
-
-                new_yfs_gross_component = float(
-                    (
-                        data.loc[
-                            young_mask,
-                            "area_yfs_cur_eligible",
-                        ]
-                        * yfs
-                    ).sum()
-                )
-
                 yc1, yc2 = st.columns(2)
 
                 yc1.metric(
                     "Jelenlegi fiatalgazda-támogatás",
-                    f"{number(current_yfs_component / 1e6, 2)} M€",
+                    f"{number(young.current_yfs / 1e6, 2)} M€",
                 )
 
                 yc2.metric(
                     "Új fiatalgazda-komponens – bruttó",
-                    f"{number(new_yfs_gross_component / 1e6, 2)} M€",
+                    f"{number(young.new_yfs_gross / 1e6, 2)} M€",
                 )
 
-                st.caption(
-                    "Az új fiatalgazda-komponens bruttó érték: "
-                    "a degresszió és a capping az összesített bruttó "
-                    "DABIS-ra kerül alkalmazásra, ezért a komponens "
-                    "nettó része önmagában nem különíthető el egyértelműen."
-                )
+                if config.exclude_young_farmer:
+                    st.caption(
+                        "A fiatalgazda-komponens nem része az elvonási alapnak, "
+                        "és teljes egészében kifizetésre kerül."
+                    )
+                else:
+                    st.caption(
+                        "Az új fiatalgazda-komponens bruttó érték: "
+                        "a degresszió és a capping az összesített bruttó "
+                        "DABIS-ra kerül alkalmazásra, ezért a komponens "
+                        "nettó része önmagában nem különíthető el egyértelműen."
+                    )
 
             with st.expander("DABIS-ráta meghatározása bruttó keretből"):
                 target = st.number_input(
@@ -606,8 +515,8 @@ with data_tab:
                     rate = find_gross_flat_rate(
                         data,
                         target * 1e6,
-                        yfs,
-                        redist,
+                        config.yfs_per_ha,
+                        config.redistributive_per_ha,
                     )
 
                     st.success(
@@ -615,16 +524,12 @@ with data_tab:
                         f"{number(rate, 2)} €/ha"
                     )
 
-                    fitted_scenario = compute_capped_subsidies(
+                    fitted = calculate_scenario(
                         data,
-                        rate,
-                        yfs,
-                        redist,
-                        dabis_policy,
+                        replace(config, dabis_per_ha=rate),
                     )
-
-                    paid = fitted_scenario["subs_capped"].sum()
-                    reduction = fitted_scenario["subs_total_reduction"].sum()
+                    paid = fitted.total_paid
+                    reduction = fitted.total_reduction
 
                     c1, c2, c3 = st.columns(3)
 
@@ -646,53 +551,59 @@ with data_tab:
             st.subheader("Az elvonás szerkezete")
             reduction_breakdown = summarize_reduction_breakdown(
                 data,
-                dabis,
-                yfs,
-                redist,
-                dabis_policy,
+                config.dabis_per_ha,
+                config.yfs_per_ha,
+                config.redistributive_per_ha,
+                config.policy,
             )
 
-            deg_reduction = float(scenario["subs_degression_reduction"].sum())
-            cap_reduction = float(scenario["subs_capping_reduction"].sum())
-            cap_farms = int((scenario["subs_capping_reduction"] > 0).sum())
-
             rcol1, rcol2, rcol3, rcol4 = st.columns(4)
-            rcol1.metric("Degresszióból", f"{number(deg_reduction / 1e6, 2)} M€")
-            rcol2.metric("Cappingből", f"{number(cap_reduction / 1e6, 2)} M€")
-            rcol3.metric("Összes elvonás", f"{number(total_reduction / 1e6, 2)} M€")
-            rcol4.metric("Cappinggel érintett", f"{number(cap_farms)} üzem")
+            rcol1.metric(
+                "Degresszióból", f"{number(results.degression_reduction / 1e6, 2)} M€"
+            )
+            rcol2.metric(
+                "Cappingből", f"{number(results.capping_reduction / 1e6, 2)} M€"
+            )
+            rcol3.metric(
+                "Összes elvonás", f"{number(results.total_reduction / 1e6, 2)} M€"
+            )
+            rcol4.metric("Cappinggel érintett", f"{number(results.capped_farms)} üzem")
 
             chart_reduction = reduction_breakdown.set_index("Tétel")[["Elvonás (M€)"]]
             st.bar_chart(chart_reduction, y_label="Elvonás (M€)")
 
-            reduction_display = reduction_breakdown.copy()
-            reduction_display["Elvonás (€)"] = reduction_display["Elvonás (€)"].map(
-                lambda value: f"{value:,.0f} €".replace(",", " ")
+            reduction_display = build_reduction_table(
+                data,
+                config,
+                breakdown=reduction_breakdown,
             )
-            reduction_display["Elvonás (M€)"] = reduction_display["Elvonás (M€)"].map(
-                lambda value: f"{value:.2f}"
+
+            # Display formatting only: keep the underlying table numeric.
+            formatters = {
+                "Elvonás (€)": lambda x: f"{number(x)} €",
+                "Elvonás (M€)": lambda x: number(x, 2),
+                "Elvonási ráta (%)": lambda x: f"{number(x)}%",
+                "Bruttó DABIS aránya (%)": lambda x: f"{number(x, 2)}%",
+                "Sáv bruttó DABIS (M€)": lambda x: number(x, 2),
+                "Üzemszám": lambda x: number(x),
+            }
+            formatted = reduction_display.style.format(
+                {
+                    col: fmt
+                    for col, fmt in formatters.items()
+                    if col in reduction_display
+                },
+                na_rep="—",
             )
-            reduction_display["Elvonási ráta (%)"] = reduction_display[
-                "Elvonási ráta (%)"
-            ].map(lambda value: "—" if pd.isna(value) else f"{value:.0f}%")
-            reduction_display["Bruttó DABIS aránya (%)"] = reduction_display[
-                "Bruttó DABIS aránya (%)"
-            ].map(lambda value: f"{value:.2f}%")
-            st.dataframe(reduction_display, hide_index=True, width="stretch")
+            st.dataframe(formatted, hide_index=True, width="stretch")
 
             category = st.selectbox(
                 "Gazdálkodói kör",
                 ["összes gazda", "csak fiatal gazda", "nem fiatal gazda"],
             )
-            grouped = calc_support_summary_by_area_class(
-                data,
-                dabis,
-                redist,
-                yfs,
+            grouped = summarize_by_area_class(
+                results,
                 category,
-                bins,
-                labels,
-                dabis_policy,
             )
             st.subheader("Hatás méretkategóriánként")
 
@@ -784,7 +695,8 @@ with data_tab:
             ax2.set_axisbelow(True)
 
             fig.tight_layout()
-            st.pyplot(fig, clear_figure=True)
+            st.pyplot(fig)
+            plt.close(fig)
 
             detail = grouped.rename(
                 columns={
@@ -816,7 +728,12 @@ with data_tab:
                     st.write("Fiatal gazdálkodók")
                     st.dataframe(
                         summarize_reduction_breakdown(
-                            data, dabis, yfs, redist, dabis_policy, "yf"
+                            data,
+                            config.dabis_per_ha,
+                            config.yfs_per_ha,
+                            config.redistributive_per_ha,
+                            config.policy,
+                            "yf",
                         ),
                         hide_index=True,
                         width="stretch",
@@ -825,7 +742,12 @@ with data_tab:
                     st.write("Nem fiatal gazdálkodók")
                     st.dataframe(
                         summarize_reduction_breakdown(
-                            data, dabis, 0, redist, dabis_policy, "not-yf"
+                            data,
+                            config.dabis_per_ha,
+                            0,
+                            config.redistributive_per_ha,
+                            config.policy,
+                            "not-yf",
                         ),
                         hide_index=True,
                         width="stretch",

@@ -6,6 +6,23 @@ import numpy as np
 import pandas as pd
 
 
+def calculate_degression_base(
+    area: pd.Series,
+    young_area: pd.Series,
+    dabis_per_ha: float,
+    yfs_per_ha: float,
+    exclude_young_farmer: bool = False,
+) -> pd.Series:
+    """Calculate gross support subject to degression and capping."""
+
+    gross_base = area.fillna(0).clip(lower=0) * dabis_per_ha
+
+    if not exclude_young_farmer:
+        gross_base += young_area.fillna(0).clip(lower=0) * yfs_per_ha
+
+    return gross_base
+
+
 @dataclass(frozen=True)
 class DegressionBand:
     """One marginal degression band on gross DABIS per farm."""
@@ -46,6 +63,7 @@ class DabisPolicy:
 
     bands: Sequence[DegressionBand] = DEFAULT_DABIS_BANDS
     payment_cap: float | None = 100_000.0
+    exclude_young_farmer: bool = False
 
     def __post_init__(self) -> None:
         _validate_bands(self.bands)
@@ -245,8 +263,25 @@ def calculate_dabis(
 ) -> pd.DataFrame:
     """Build gross DABIS, apply degression/capping, and return one joined table."""
     gross = build_gross_dabis(data, components)
-    degression = apply_degression(gross["dabis_gross"], policy)
-    return gross.join(degression.drop(columns="dabis_gross"))
+
+    exempt = pd.Series(0.0, index=data.index)
+
+    if policy.exclude_young_farmer and "young_farmer" in components:
+        exempt = gross["dabis_component_young_farmer"].astype(float)
+
+    subject_to_reductions = gross["dabis_gross"] - exempt
+
+    degression = apply_degression(subject_to_reductions, policy)
+
+    result = gross.join(degression.drop(columns="dabis_gross"))
+
+    result["dabis_exempt_young_farmer"] = exempt
+    result["dabis_subject_to_reductions"] = subject_to_reductions
+
+    result["dabis_after_degression"] += exempt
+    result["dabis_paid"] += exempt
+
+    return result
 
 
 def reduction_summary(result: pd.DataFrame) -> pd.Series:

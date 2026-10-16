@@ -187,10 +187,11 @@ def find_cur_new_equal_root(
     policy: DabisPolicy = DEFAULT_DABIS_POLICY,
 ) -> float:
     def f(x):
-        return apply_reductions(
-            eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha),
-            policy,
-        ) - compute_current_support(x, yfs_per_ha)
+        yfs = yfs_per_ha * min(300, x)
+        exempt = yfs if policy.exclude_young_farmer else 0.0
+        gross = eur_per_ha * x + yfs + cal_redist(x, redist_per_ha)
+        paid = apply_reductions(gross - exempt, policy) + exempt
+        return paid - compute_current_support(x, yfs_per_ha)
 
     sol = root_scalar(f, bracket=(1e-3, 4e9), method="brentq")
     return sol.root
@@ -213,7 +214,11 @@ def find_cur_new_equal_roots(
         + cal_redist_vec(x_values, redist_per_ha)
     )
 
-    new_support = apply_reductions_vec(pd.Series(gross), policy).to_numpy()
+    yfs = yfs_per_ha * np.minimum(300, x_values)
+    exempt = yfs if policy.exclude_young_farmer else 0.0
+    new_support = (
+        apply_reductions_vec(pd.Series(gross - exempt), policy).to_numpy() + exempt
+    )
 
     current_support = np.array(
         [compute_current_support(x, yfs_per_ha) for x in x_values]
@@ -222,10 +227,11 @@ def find_cur_new_equal_roots(
     f_values = new_support - current_support
 
     def f(x: float) -> float:
-        return apply_reductions(
-            eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha),
-            policy,
-        ) - compute_current_support(x, yfs_per_ha)
+        yfs = yfs_per_ha * min(300, x)
+        exempt = yfs if policy.exclude_young_farmer else 0.0
+        gross = eur_per_ha * x + yfs + cal_redist(x, redist_per_ha)
+        paid = apply_reductions(gross - exempt, policy) + exempt
+        return paid - compute_current_support(x, yfs_per_ha)
 
     roots = []
 
@@ -1027,7 +1033,10 @@ def calc_degressive_and_capping_steps(
 ) -> pd.DataFrame:
     thresholds = [20_000, 50_000, 75_000, 255_000]
     thresholds_ha = calc_thresholds(
-        thresholds, dabis_per_ha, redistributive_per_ha, yfs_per_ha
+        thresholds,
+        dabis_per_ha,
+        redistributive_per_ha,
+        0.0 if policy.exclude_young_farmer else yfs_per_ha,
     )
 
     bins = [0] + thresholds_ha + [np.inf]
@@ -1040,8 +1049,15 @@ def calc_degressive_and_capping_steps(
         + yfs_per_ha * df["area_yfs_cur_eligible"]
         + cal_redist_vec(df["area_biss_criss"], redistributive_per_ha)
     )
-    df["subs_dabis_after_capping"] = apply_reductions_vec(
-        df["subs_dabis_before_capping"], policy
+    yfs = yfs_per_ha * df["area_yfs_cur_eligible"]
+    exempt = yfs if policy.exclude_young_farmer else 0.0
+
+    df["subs_dabis_after_capping"] = (
+        apply_reductions_vec(
+            df["subs_dabis_before_capping"] - exempt,
+            policy,
+        )
+        + exempt
     )
 
     mask = df["area_yfs_cur_eligible"] > 0
@@ -1054,12 +1070,18 @@ def calc_degressive_and_capping_steps(
 
 
 def calc_ratio_subs(
-    x, eur_per_ha, yfs_per_ha, redist_per_ha, policy=DEFAULT_DABIS_POLICY
+    x,
+    eur_per_ha,
+    yfs_per_ha,
+    redist_per_ha,
+    policy=DEFAULT_DABIS_POLICY,
 ):
-    new_subs = apply_reductions(
-        eur_per_ha * x + yfs_per_ha * min(300, x) + cal_redist(x, redist_per_ha),
-        policy,
-    )
+    yfs = yfs_per_ha * min(300, x)
+    exempt = yfs if policy.exclude_young_farmer else 0.0
+
+    gross = eur_per_ha * x + yfs + cal_redist(x, redist_per_ha)
+    new_subs = apply_reductions(gross - exempt, policy) + exempt
+
     cur_subs = compute_current_support(x, yfs_per_ha)
     return (new_subs - cur_subs) / (cur_subs + 1e-12)
 
