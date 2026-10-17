@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from mff.dabis_engine import DabisPolicy, DegressionBand, calculate_degression_base
+from mff.dabis_engine import DabisPolicy, DegressionBand, legacy_components
 from mff.new_cap import compute_capped_subsidies
 
 
@@ -14,6 +14,7 @@ class ScenarioConfig:
 
     dabis_per_ha: float = 90.0
     yfs_per_ha: float = 50.0
+    yfs_max_ha: float = 300.0
     redistributive_per_ha: tuple[float, float] = (0.0, 0.0)
 
     thresholds: tuple[float, float, float] = (
@@ -45,6 +46,17 @@ class ScenarioConfig:
         if self.dabis_per_ha < 0 or self.yfs_per_ha < 0:
             raise ValueError("Support rates cannot be negative.")
 
+        if self.yfs_max_ha <= 0:
+            raise ValueError("YFS maximum area must be positive.")
+
+    def young_area(self, data: pd.DataFrame) -> pd.Series:
+        return (
+            data["area_biss_criss"]
+            .where(data["area_yfs_cur_eligible"].gt(0), 0.0)
+            .fillna(0.0)
+            .clip(lower=0.0, upper=self.yfs_max_ha)
+        )
+
     @property
     def policy(self) -> DabisPolicy:
         """Construct the degression and capping policy."""
@@ -63,13 +75,18 @@ class ScenarioConfig:
         )
 
     def degression_base(self, data: pd.DataFrame) -> pd.Series:
-        return calculate_degression_base(
-            area=data["area_biss_criss"],
-            young_area=data["area_yfs_cur_eligible"],
-            dabis_per_ha=self.dabis_per_ha,
+        """Gross reduction base, consistent with the scenario calculation engine."""
+        eligible = data.assign(area_yfs_cur_eligible=self.young_area(data))
+        components = legacy_components(
+            eligible,
+            flat_rate=self.dabis_per_ha,
             yfs_per_ha=self.yfs_per_ha,
-            exclude_young_farmer=self.exclude_young_farmer,
+            redist_per_ha=self.redistributive_per_ha,
         )
+        base = components["base"] + components["redistributive"]
+        if not self.exclude_young_farmer:
+            base = base + components["young_farmer"]
+        return base
 
 
 @dataclass(slots=True)
@@ -123,8 +140,12 @@ def calculate_scenario(
 ) -> ScenarioResults:
     """Calculate a DABIS scenario for a farm-level dataset."""
 
+    scenario_data = data.copy()
+
+    scenario_data["area_yfs_cur_eligible"] = config.young_area(data)
+
     new = compute_capped_subsidies(
-        data,
+        scenario_data,
         config.dabis_per_ha,
         config.yfs_per_ha,
         config.redistributive_per_ha,

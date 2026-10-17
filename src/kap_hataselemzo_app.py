@@ -1,9 +1,12 @@
 import os
 import tempfile
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 
 import matplotlib
+
+from mff.utils import c_round
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -17,24 +20,23 @@ from mff.new_cap import (
     compute_current_support,
     compute_dabis_support_summary,
     find_gross_flat_rate,
-    generate_labels_from_bins,
     read_extended_base_data,
-    summarize_reduction_breakdown,
 )
 from mff.plots import (
     PolicyParams,
     plot_diff_pct,
     plot_per_ha,
     plot_reduction,
+    plot_support_comparison_by_area_class,
     plot_total,
 )
 from mff.scenario import ScenarioConfig, calculate_scenario
+from mff.scenario_store import deserialize_scenarios, serialize_scenarios
 from mff.summaries import (
-    AREA_BINS,
-    YOUNG_FARMER_EXAMPLE_MAX_HA,
     build_reduction_table,
     summarize_by_area_class,
     summarize_example_farms,
+    summarize_reductions,
     summarize_young_farmers,
 )
 
@@ -71,15 +73,119 @@ st.set_page_config(page_title="KAP hatáselemző", page_icon="🌾", layout="wid
 st.markdown(
     """
 <style>
-    .stApp {background:#f5f8f8;color:#19313a}
-    [data-testid="stSidebar"] {background:#102934}
-    [data-testid="stSidebar"] * {color:#e3f2ee}
-    [data-testid="stSidebar"] [data-testid="stNumberInput"] input {color:#19313a}
-    .block-container {padding-top:1.6rem;max-width:1450px}
-    [data-testid="stMetric"] {background:white;border:1px solid #dfe9e8;border-radius:12px;padding:16px 19px}
-    .eyebrow {color:#168668;font-size:.75rem;font-weight:800;letter-spacing:.13em}
-    .title {font-size:clamp(2rem,3vw,3rem);line-height:1.15;letter-spacing:-.04em;font-weight:800;margin:.35rem 0}
-    .subtitle {color:#698388;font-size:.9rem;margin:0 0 1.2rem}
+    /* ===== Main layout ===== */
+    .stApp {
+        background: #f5f8f8;
+        color: #19313a;
+    }
+
+    .block-container {
+        padding-top: 1.6rem;
+        max-width: 1450px;
+    }
+
+    /* ===== Sidebar ===== */
+    [data-testid="stSidebar"] {
+        background: #102934;
+        color: #e3f2ee;
+    }
+
+    /* Sidebar headings, labels and help text */
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] [data-testid="stWidgetLabel"],
+    [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
+        color: #e3f2ee;
+    }
+
+    [data-testid="stSidebar"] .stCaptionContainer,
+    [data-testid="stSidebar"] .stCaptionContainer p {
+        color: #9fb5bb;
+    }
+
+    /* ===== Input controls ===== */
+    [data-testid="stSidebar"] [data-baseweb="input"],
+    [data-testid="stSidebar"] [data-baseweb="select"] > div {
+        background: #ffffff;
+        border-radius: 8px;
+    }
+
+    /* Explicit dark text in white input fields */
+    [data-testid="stSidebar"] input,
+    [data-testid="stSidebar"] textarea,
+    [data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"],
+    [data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"] * {
+        color: #19313a !important;
+        -webkit-text-fill-color: #19313a;
+    }
+
+    [data-testid="stSidebar"] input::placeholder {
+        color: #82979d !important;
+        -webkit-text-fill-color: #82979d;
+        opacity: 1;
+    }
+
+    /* Dropdown arrows */
+    [data-testid="stSidebar"] [data-baseweb="select"] svg {
+        color: #526e75;
+        fill: #526e75;
+    }
+
+    /* ===== Compact numeric inputs ===== */
+    [data-testid="stSidebar"] [data-testid="stNumberInput"] input {
+        min-height: 2.15rem;
+        padding: .25rem .55rem;
+        font-variant-numeric: tabular-nums;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stNumberInput"] button {
+        display: none;
+    }
+
+    /* ===== Compact spacing ===== */
+    [data-testid="stSidebar"] [data-testid="stWidgetLabel"] {
+        margin-bottom: .1rem;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+        gap: .55rem;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stExpander"] {
+        border-radius: 10px;
+    }
+
+    /* ===== Metrics ===== */
+    [data-testid="stMetric"] {
+        background: white;
+        border: 1px solid #dfe9e8;
+        border-radius: 12px;
+        padding: 16px 19px;
+    }
+
+    /* ===== Typography ===== */
+    .eyebrow {
+        color: #168668;
+        font-size: .75rem;
+        font-weight: 800;
+        letter-spacing: .13em;
+    }
+
+    .title {
+        font-size: clamp(2rem, 3vw, 3rem);
+        line-height: 1.15;
+        letter-spacing: -.04em;
+        font-weight: 800;
+        margin: .35rem 0;
+    }
+
+    .subtitle {
+        color: #698388;
+        font-size: .9rem;
+        margin: 0 0 1.2rem;
+    }
 </style>
 """,
     unsafe_allow_html=True,
@@ -87,7 +193,74 @@ st.markdown(
 
 
 def number(value: float, decimals: int = 0) -> str:
-    return f"{value:,.{decimals}f}".replace(",", " ").replace(".", ",")
+    rounded = c_round(value, decimals)
+    return f"{rounded:,.{decimals}f}".replace(",", " ").replace(".", ",")
+
+
+@st.cache_data(show_spinner=False)
+def tables_to_xlsx(tables: dict[str, pd.DataFrame]) -> bytes:
+    """Export DataFrames to separate, formatted Excel worksheets."""
+    output = BytesIO()
+    with pd.ExcelWriter(
+        output,
+        engine="xlsxwriter",
+        engine_kwargs={
+            "options": {"strings_to_formulas": False, "strings_to_urls": False}
+        },
+    ) as writer:
+        header_format = writer.book.add_format(
+            {
+                "bold": True,
+                "font_color": "#FFFFFF",
+                "bg_color": "#102934",
+                "text_wrap": True,
+                "valign": "vcenter",
+                "border": 0,
+            }
+        )
+        integer_format = writer.book.add_format({"num_format": "#,##0"})
+        decimal_format = writer.book.add_format({"num_format": "#,##0.00"})
+        percentage_format = writer.book.add_format({"num_format": '0.00"%"'})
+
+        for sheet_name, df in tables.items():
+            if df.empty and len(df.columns) == 0:
+                continue
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            ws = writer.sheets[sheet_name]
+            ws.freeze_panes(1, 0)
+            ws.set_row(0, 33)
+            ws.set_default_row(19)
+            ws.autofilter(0, 0, max(len(df), 1), len(df.columns) - 1)
+
+            for col_idx, col_name in enumerate(df.columns):
+                ws.write(0, col_idx, str(col_name), header_format)
+                series = df[col_name]
+                width = min(
+                    40,
+                    max(
+                        13,
+                        len(str(col_name)) + 2,
+                        max(
+                            (len(str(v)) + 1 for v in series.head(100).dropna()),
+                            default=0,
+                        ),
+                    ),
+                )
+                if pd.api.types.is_numeric_dtype(
+                    series
+                ) and not pd.api.types.is_bool_dtype(series):
+                    fmt = (
+                        percentage_format
+                        if "(%)" in str(col_name)
+                        else integer_format
+                        if pd.api.types.is_integer_dtype(series)
+                        else decimal_format
+                    )
+                else:
+                    fmt = None
+                ws.set_column(col_idx, col_idx, width, fmt)
+
+    return output.getvalue()
 
 
 @st.cache_data(show_spinner="Üzemsoros állomány betöltése…")
@@ -106,6 +279,7 @@ def notebook_plot(
         base_payment_per_ha=config.dabis_per_ha,
         yfs_per_ha=config.yfs_per_ha if is_young else 0,
         redist_params=config.redistributive_per_ha,
+        yfs_cap_ha=config.yfs_max_ha,
         dabis_policy=config.policy,
     )
     group = "fiatal gazdálkodó" if is_young else "nem fiatal gazdálkodó"
@@ -152,111 +326,247 @@ def notebook_plot(
         Path(output_path).unlink(missing_ok=True)
 
 
+SCENARIOS_FILE = Path(__file__).resolve().parent / "data" / "scenarios.json"
+
+
+def scenarios() -> dict[str, ScenarioConfig]:
+    if "saved_scenarios" not in st.session_state:
+        st.session_state["saved_scenarios"] = deserialize_scenarios(
+            SCENARIOS_FILE.read_text(encoding="utf-8")
+        )
+
+    return st.session_state["saved_scenarios"]
+
+
+def apply_scenario(config: ScenarioConfig) -> None:
+    """Must run before widget creation, or inside a widget callback."""
+    values = {
+        "base_year": config.year,
+        "dabis": config.dabis_per_ha,
+        "yfs": config.yfs_per_ha,
+        "yfs_max_ha": config.yfs_max_ha,
+        "redist_1": config.redistributive_per_ha[0],
+        "redist_2": config.redistributive_per_ha[1],
+        "band_1": config.thresholds[0],
+        "band_2": config.thresholds[1],
+        "band_3": config.thresholds[2],
+        "rate_20_50_pct": round(config.rates[0] * 100),
+        "rate_50_75_pct": round(config.rates[1] * 100),
+        "rate_75_plus_pct": round(config.rates[2] * 100),
+        "exclude_young_farmer": config.exclude_young_farmer,
+        "cap_enabled": config.payment_cap is not None,
+        "cap_value": config.payment_cap
+        if config.payment_cap is not None
+        else 100_000.0,
+    }
+    st.session_state.update(values)
+
+
+def on_scenario_change() -> None:
+    apply_scenario(scenarios()[st.session_state["selected_scenario"]])
+
+
+def import_uploaded_scenarios() -> None:
+    uploaded = st.session_state.get("scenario_import_file")
+    if uploaded is None:
+        st.session_state["scenario_notice"] = ("warning", "Válassz egy JSON-fájlt.")
+        return
+    try:
+        incoming = deserialize_scenarios(uploaded.getvalue().decode("utf-8"))
+        conflicts = set(incoming) & set(scenarios())
+        if conflicts:
+            raise ValueError(
+                "Már létező forgatókönyvnevek: " + ", ".join(sorted(conflicts))
+            )
+        scenarios().update(incoming)
+        st.session_state["scenario_notice"] = (
+            "success",
+            f"{len(incoming)} forgatókönyv importálva.",
+        )
+    except (UnicodeError, ValueError, TypeError, KeyError) as exc:
+        st.session_state["scenario_notice"] = ("error", f"Sikertelen import: {exc}")
+
+
+if "selected_scenario" not in st.session_state:
+    selected = next(iter(scenarios()))
+    st.session_state["selected_scenario"] = selected
+    apply_scenario(scenarios()[selected])
+
+pending_name = st.session_state.pop("scenario_pending_select", None)
+if pending_name is not None:
+    st.session_state["selected_scenario"] = pending_name
+    on_scenario_change()
+
 if "pending_dabis" in st.session_state:
     st.session_state["dabis"] = st.session_state.pop("pending_dabis")
 
 with st.sidebar:
     st.header("Forgatókönyv")
-
-    base_year = st.selectbox(
-        "Bázisév",
-        options=[2024, 2025, 2026],
-        index=0,
+    st.selectbox(
+        "Aktív forgatókönyv",
+        options=list(scenarios()),
+        key="selected_scenario",
+        on_change=on_scenario_change,
     )
-    st.caption("Kiinduló értékek: 90 €/ha általános DABIS + 50 €/ha fiatal gazda")
+    st.caption("A szerkesztések mentésig csak ebben a munkamenetben érvényesek.")
+    st.divider()
+    st.subheader("Alapparaméterek")
 
-    dabis = st.number_input(
-        "DABIS általános (€/ha)",
-        min_value=90.0,
-        max_value=240.0,
-        value=90.0,
-        step=5.0,
-        key="dabis",
-    )
-    yfs = st.number_input(
-        "DABIS · fiatal gazda (€/ha)",
-        min_value=0.0,
-        max_value=200.0,
-        value=50.0,
-        step=5.0,
-    )
+    base_year = st.selectbox("Bázisév", options=[2024, 2025, 2026], key="base_year")
 
-    with st.expander("Degresszió és capping", expanded=True):
-        st.caption("A sávhatárok bruttó DABIS összegek, az elvonás marginális.")
-
-        band_1 = st.number_input(
-            "1. sávhatár (€)",
-            min_value=1_000.0,
-            max_value=500_000.0,
-            value=20_000.0,
-            step=5_000.0,
+    st.caption("**Területalapú támogatások** · €/ha")
+    col_a, col_b = st.columns(2, gap="small")
+    with col_a:
+        dabis = st.number_input(
+            "DABIS",
+            min_value=0.0,
+            max_value=1_000.0,
+            step=5.0,
+            format="%.1f",
+            key="dabis",
         )
-        band_2 = st.number_input(
-            "2. sávhatár (€)",
-            min_value=1_000.0,
-            max_value=500_000.0,
-            value=50_000.0,
-            step=5_000.0,
-        )
-        band_3 = st.number_input(
-            "3. sávhatár (€)",
-            min_value=1_000.0,
-            max_value=1_000_000.0,
-            value=75_000.0,
-            step=5_000.0,
+    with col_b:
+        yfs = st.number_input(
+            "Fiatalgazda (YFS)",
+            min_value=0.0,
+            max_value=500.0,
+            step=5.0,
+            format="%.1f",
+            key="yfs",
         )
 
-        rate_20_50_pct = st.slider("2. sáv elvonása", 0, 100, 25, 5, format="%d%%")
-        rate_50_75_pct = st.slider("3. sáv elvonása", 0, 100, 50, 5, format="%d%%")
-        rate_75_plus_pct = st.slider("4. sáv elvonása", 0, 100, 75, 5, format="%d%%")
+    yfs_max_ha = st.number_input(
+        "YFS felső területi határa (ha)",
+        min_value=1.0,
+        max_value=10_000.0,
+        step=10.0,
+        format="%.0f",
+        key="yfs_max_ha",
+    )
+
+    st.caption("**Redisztributív támogatás** · €/ha")
+    redist_a, redist_b = st.columns(2, gap="small")
+    with redist_a:
+        redist_1 = st.number_input(
+            "1. ráta",
+            min_value=0.0,
+            max_value=1_000.0,
+            step=5.0,
+            format="%.1f",
+            key="redist_1",
+            help="A redisztributív támogatás első fajlagos rátája.",
+        )
+    with redist_b:
+        redist_2 = st.number_input(
+            "2. ráta",
+            min_value=0.0,
+            max_value=1_000.0,
+            step=5.0,
+            format="%.1f",
+            key="redist_2",
+            help="A redisztributív támogatás második fajlagos rátája.",
+        )
+    st.caption("A két ráta területi sávjait a számítási motor rögzíti.")
+
+    with st.expander("Degresszió és kifizetési plafon", expanded=False):
+        st.caption("Bruttó támogatási sávhatárok (€), marginális elvonással.")
+        t1, t2, t3 = st.columns(3, gap="small")
+        with t1:
+            band_1 = st.number_input(
+                "Határ 1",
+                min_value=1_000.0,
+                max_value=500_000.0,
+                step=5_000.0,
+                format="%.0f",
+                key="band_1",
+            )
+        with t2:
+            band_2 = st.number_input(
+                "Határ 2",
+                min_value=1_000.0,
+                max_value=500_000.0,
+                step=5_000.0,
+                format="%.0f",
+                key="band_2",
+            )
+        with t3:
+            band_3 = st.number_input(
+                "Határ 3",
+                min_value=1_000.0,
+                max_value=1_000_000.0,
+                step=5_000.0,
+                format="%.0f",
+                key="band_3",
+            )
+
+        st.caption("**Elvonási ráták** · %")
+        r1, r2, r3 = st.columns(3, gap="small")
+        with r1:
+            rate_20_50_pct = st.number_input(
+                "2. sáv",
+                min_value=0,
+                max_value=100,
+                step=5,
+                key="rate_20_50_pct",
+            )
+        with r2:
+            rate_50_75_pct = st.number_input(
+                "3. sáv",
+                min_value=0,
+                max_value=100,
+                step=5,
+                key="rate_50_75_pct",
+            )
+        with r3:
+            rate_75_plus_pct = st.number_input(
+                "4. sáv",
+                min_value=0,
+                max_value=100,
+                step=5,
+                key="rate_75_plus_pct",
+            )
 
         exclude_young_farmer = st.toggle(
-            "Fiatalgazda-többlettámogatás kivonása az elvonási alapból",
-            value=False,
-            help="A fiatalgazda-kiegészítés nem számít bele a degresszió és a plafon alapjába, de teljes egészében kifizetésre kerül.",
+            "YFS mentessége az elvonás alól",
+            key="exclude_young_farmer",
+            help="A YFS nem része sem a degresszió, sem a capping alapjának.",
         )
-
-        cap_enabled = st.toggle("Kifizetési plafon", value=True)
+        cap_enabled = st.toggle("Kifizetési plafon alkalmazása", key="cap_enabled")
         cap_value = st.number_input(
-            "Plafon (€ / üzem)",
+            "Kifizetési plafon (€ / üzem)",
             min_value=1_000.0,
             max_value=1_000_000.0,
-            value=100_000.0,
             step=5_000.0,
+            format="%.0f",
             disabled=not cap_enabled,
+            key="cap_value",
         )
 
-        if not 0 < band_1 < band_2 < band_3:
-            st.error("A sávhatároknak növekvő sorrendben kell lenniük.")
-            st.stop()
+    if not 0 < band_1 < band_2 < band_3:
+        st.error("A három degressziós sávhatárnak növekvő sorrendben kell lennie.")
+        st.stop()
 
-        rate_20_50 = rate_20_50_pct / 100
-        rate_50_75 = rate_50_75_pct / 100
-        rate_75_plus = rate_75_plus_pct / 100
-        payment_cap = cap_value if cap_enabled else None
+    config = ScenarioConfig(
+        year=base_year,
+        dabis_per_ha=dabis,
+        yfs_per_ha=yfs,
+        yfs_max_ha=yfs_max_ha,
+        redistributive_per_ha=(redist_1, redist_2),
+        thresholds=(band_1, band_2, band_3),
+        rates=(rate_20_50_pct / 100, rate_50_75_pct / 100, rate_75_plus_pct / 100),
+        payment_cap=cap_value if cap_enabled else None,
+        exclude_young_farmer=exclude_young_farmer,
+    )
 
-        config = ScenarioConfig(
-            year=base_year,
-            dabis_per_ha=dabis,
-            yfs_per_ha=yfs,
-            redistributive_per_ha=(0.0, 0.0),
-            thresholds=(band_1, band_2, band_3),
-            rates=(rate_20_50, rate_50_75, rate_75_plus),
-            payment_cap=payment_cap,
-            exclude_young_farmer=exclude_young_farmer,
+    cap_trigger = gross_at_payment_cap(config.policy)
+    if config.payment_cap is None:
+        st.caption("Plafon: kikapcsolva")
+    elif cap_trigger is None:
+        st.caption("A beállított plafon e ráták mellett nem válik kötővé.")
+    else:
+        st.caption(
+            f"Plafon érvényesülése: kb. {number(cap_trigger)} € bruttó összegtől"
         )
-
-        cap_trigger = gross_at_payment_cap(config.policy)
-        if payment_cap is None:
-            st.caption("A capping ki van kapcsolva.")
-        elif cap_trigger is None:
-            st.caption(
-                "A megadott degressziós ráták mellett ez a plafon nem válik kötővé."
-            )
-        else:
-            st.caption(
-                f"A plafon kb. {number(cap_trigger)} € bruttó DABIS-nál kezd kötni."
-            )
 
     st.divider()
     st.caption(
@@ -264,9 +574,46 @@ with st.sidebar:
         "Az AÖP és más támogatási elemek itt nem szerepelnek."
     )
 
+    st.divider()
+    st.subheader("Forgatókönyvek mentése")
+    name = st.text_input("Új forgatókönyv neve", key="new_scenario_name")
+    if st.button("Mentés új néven"):
+        new_name = name.strip()
+        if not new_name or len(new_name) > 100:
+            st.warning("Adj meg egy legfeljebb 100 karakteres nevet.")
+        elif new_name in scenarios():
+            st.warning("Ilyen néven már létezik forgatókönyv.")
+        else:
+            scenarios()[new_name] = config
+            st.session_state["scenario_pending_select"] = new_name
+            st.rerun()
 
-bins = AREA_BINS
-labels = generate_labels_from_bins(bins)
+    selected_name = st.session_state["selected_scenario"]
+    if selected_name != next(iter(scenarios())):
+        left, right = st.columns(2)
+        if left.button("Felülírás", use_container_width=True):
+            scenarios()[selected_name] = config
+            st.success("Forgatókönyv mentve.")
+        if right.button("Törlés", use_container_width=True):
+            del scenarios()[selected_name]
+            st.session_state["scenario_pending_select"] = next(iter(scenarios()))
+            st.rerun()
+
+    st.download_button(
+        "Forgatókönyvek exportálása (JSON)",
+        data=serialize_scenarios(scenarios()),
+        file_name="scenarios.json",
+        mime="application/json",
+    )
+    st.file_uploader(
+        "Forgatókönyvek importálása (JSON)", type="json", key="scenario_import_file"
+    )
+    st.button("Importálás", on_click=import_uploaded_scenarios)
+    notice = st.session_state.pop("scenario_notice", None)
+    if notice is not None:
+        getattr(st, notice[0])(notice[1])
+
+
 required = {
     "area_biss_criss",
     "area_yfs_cur_eligible",
@@ -308,9 +655,7 @@ with farm_tab:
     farm = pd.DataFrame(
         {
             "area_biss_criss": [area],
-            "area_yfs_cur_eligible": [
-                min(area, YOUNG_FARMER_EXAMPLE_MAX_HA) if is_young else 0
-            ],
+            "area_yfs_cur_eligible": [min(area, config.yfs_max_ha) if is_young else 0],
         }
     )
     farm_new = compute_capped_subsidies(
@@ -379,12 +724,18 @@ with farm_tab:
             hide_index=True,
             width="stretch",
         )
+        st.download_button(
+            "Jellemző üzemméretek letöltése (Excel)",
+            data=tables_to_xlsx({"Üzemméretek": overview}),
+            file_name=f"kap_uzemmeretek_{base_year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 with data_tab:
     st.subheader(f"{base_year}-es üzemsoros állomány")
 
     try:
-        data = load_local_data(base_year)
+        data: pd.DataFrame | None = load_local_data(base_year)
     except (FileNotFoundError, OSError, ImportError, ValueError) as exc:
         data = None
         st.info(f"A {base_year}-es üzemsoros állomány nem tölthető be ({exc}).")
@@ -397,7 +748,6 @@ with data_tab:
             )
         else:
             results = calculate_scenario(data, config)
-            scenario = results.new
 
             st.caption(f"{base_year}-es bázis · helyi állomány")
 
@@ -512,8 +862,11 @@ with data_tab:
                 )
 
                 if st.button("Ráta kiszámítása"):
+                    rate_data = data.copy()
+                    rate_data["area_yfs_cur_eligible"] = config.young_area(data)
+
                     rate = find_gross_flat_rate(
-                        data,
+                        rate_data,
                         target * 1e6,
                         config.yfs_per_ha,
                         config.redistributive_per_ha,
@@ -549,13 +902,9 @@ with data_tab:
                     )
 
             st.subheader("Az elvonás szerkezete")
-            reduction_breakdown = summarize_reduction_breakdown(
-                data,
-                config.dabis_per_ha,
-                config.yfs_per_ha,
-                config.redistributive_per_ha,
-                config.policy,
-            )
+            reductions = summarize_reductions(results, config)
+
+            reduction_breakdown = reductions["all"]
 
             rcol1, rcol2, rcol3, rcol4 = st.columns(4)
             rcol1.metric(
@@ -576,16 +925,45 @@ with data_tab:
                 data,
                 config,
                 breakdown=reduction_breakdown,
+                scenario=results.new,
+            ).drop(columns=["Elvonás (€)"])
+
+            st.caption(
+                "A bruttó és nettó sávösszegek a támogatás marginális részeire vonatkoznak; "
+                "a sávonkénti elvonás a degresszióból eredő levonás. "
+                "A sávba sorolt gazdaságok mutatói ezzel szemben az adott bruttó "
+                "támogatási kategória teljes támogatását, területét és összes "
+                "(degressziós és plafon miatti) elvonását írják le. "
+                "A teljes elvonás aránya csoportszintű hányados, nem a sávban "
+                "alkalmazott marginális ráta. A sávval érintett gazdaságok több "
+                "sávban szerepelhetnek. YFS-mentességnél a gazdaságokat teljes "
+                "bruttó támogatásuk szerint soroljuk be, a marginális elvonási "
+                "alap azonban nem tartalmazza a mentesített YFS-t. "
+                "A plafon sora átfedő: csoportadatai nem összegezhetők a négy "
+                "sáv adataival. A plafon sorának 'Elvonás (M€)' értéke kizárólag "
+                "a plafon miatti többletelvonás, ez hozzáadható a sávok "
+                "degressziós elvonásához. A 'Plafon feletti bruttó alap' "
+                "nem azonos a plafon miatti tényleges elvonással."
             )
 
-            # Display formatting only: keep the underlying table numeric.
+            # A megjelenítés formázott; az XLSX-export számértékeket kap.
             formatters = {
-                "Elvonás (€)": lambda x: f"{number(x)} €",
                 "Elvonás (M€)": lambda x: number(x, 2),
-                "Elvonási ráta (%)": lambda x: f"{number(x)}%",
+                "Elvonási ráta (%)": lambda x: f"{number(x, 2)}%",
                 "Bruttó DABIS aránya (%)": lambda x: f"{number(x, 2)}%",
-                "Sáv bruttó DABIS (M€)": lambda x: number(x, 2),
-                "Üzemszám": lambda x: number(x),
+                "Bruttó DABIS (M€)": lambda x: number(x, 2),
+                "Nettó DABIS (M€)": lambda x: number(x, 2),
+                "Sávba tartozó gazdaságok (db)": lambda x: number(x),
+                "Sávval érintett gazdaságok (db)": lambda x: number(x),
+                "Sávba tartozó gazdaságok területe (ha)": lambda x: number(x, 1),
+                "Sávba tartozók bruttó támogatása (M€)": lambda x: number(x, 2),
+                "Sávba tartozók teljes elvonása (M€)": lambda x: number(x, 2),
+                "Sávba tartozók nettó támogatása (M€)": lambda x: number(x, 2),
+                "Elvonással érintett gazdaságok (db)": lambda x: number(x),
+                "Átlagos teljes elvonás (€/gazdaság)": lambda x: number(x, 0),
+                "Teljes elvonás aránya (%)": lambda x: f"{number(x, 2)}%",
+                "Plafon feletti bruttó alap (M€)": lambda x: number(x, 2),
+                "Plafon miatti elvonás (M€)": lambda x: number(x, 2),
             }
             formatted = reduction_display.style.format(
                 {
@@ -596,6 +974,12 @@ with data_tab:
                 na_rep="—",
             )
             st.dataframe(formatted, hide_index=True, width="stretch")
+            st.download_button(
+                "Elvonás szerkezete letöltése (Excel)",
+                data=tables_to_xlsx({"Elvonás": reduction_display}),
+                file_name=f"kap_elvonas_{base_year}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
             category = st.selectbox(
                 "Gazdálkodói kör",
@@ -607,96 +991,11 @@ with data_tab:
             )
             st.subheader("Hatás méretkategóriánként")
 
-            categories = grouped.index.astype(str).tolist()
-            current_meur = grouped["total_subs_cur"].to_numpy() / 1e6
-            new_meur = grouped["total_subs_capped"].to_numpy() / 1e6
-            pct_change = grouped["avg_change"].to_numpy()
-
-            x = np.arange(len(categories))
-            width = 0.36
-
-            def add_labels(ax, bars, decimals=1, suffix=""):
-                ymax = 0
-                for bar in bars:
-                    h = bar.get_height()
-                    ymax = max(ymax, h)
-                    ax.annotate(
-                        f"{h:.{decimals}f}{suffix}",
-                        xy=(bar.get_x() + bar.get_width() / 2, h),
-                        xytext=(0, 4 if h >= 0 else -4),
-                        textcoords="offset points",
-                        ha="center",
-                        va="bottom" if h >= 0 else "top",
-                        fontsize=9,
-                    )
-                return ymax
-
-            fig, (ax1, ax2) = plt.subplots(
-                2,
-                1,
-                figsize=(11, 8),
-                sharex=True,
-                gridspec_kw={"height_ratios": [2.2, 1]},
-            )
-
-            bars1 = ax1.bar(
-                x - width / 2,
-                current_meur,
-                width,
-                label="Jelenlegi",
-                color="#477ea6",
-            )
-
-            bars2 = ax1.bar(
-                x + width / 2,
-                new_meur,
-                width,
-                label="Új",
-                color="#0d9871",
-            )
-
-            max1 = add_labels(ax1, bars1, decimals=1, suffix="")
-            max2 = add_labels(ax1, bars2, decimals=1, suffix="")
-            ymax = max(max1, max2)
-
-            ax1.set_ylabel("Támogatás (M€)", fontsize=11, fontweight="bold")
-            ax1.set_title(
-                "Jelenlegi és új támogatás méretkategóriánként",
-                fontsize=13,
-                fontweight="bold",
-            )
-            ax1.legend(loc="upper right", frameon=True)
-            ax1.grid(axis="y", linestyle="--", alpha=0.5)
-            ax1.set_axisbelow(True)
-            ax1.set_ylim(0, ymax * 1.18 if ymax > 0 else 1)
-
-            colors = ["#0d9871" if v >= 0 else "#b22222" for v in pct_change]
-
-            bars3 = ax2.bar(
-                x,
-                pct_change,
-                color=colors,
-                width=0.55,
-            )
-
-            add_labels(ax2, bars3, decimals=1, suffix="%")
-
-            ax2.axhline(0, color="black", linewidth=1)
-            ax2.set_ylabel("Változás (%)", fontsize=11, fontweight="bold")
-            ax2.set_title(
-                "Relatív változás méretkategóriánként",
-                fontsize=12,
-                fontweight="bold",
-            )
-            ax2.set_xticks(x)
-            ax2.set_xticklabels(categories)
-            ax2.set_xlabel("Méretkategória", fontsize=11, fontweight="bold")
-            ax2.grid(axis="y", linestyle="--", alpha=0.5)
-            ax2.set_axisbelow(True)
-
-            fig.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
+            fig = plot_support_comparison_by_area_class(grouped)
+            try:
+                st.pyplot(fig)
+            finally:
+                plt.close(fig)
 
             detail = grouped.rename(
                 columns={
@@ -710,45 +1009,70 @@ with data_tab:
             )
             st.dataframe(detail, width="stretch")
             st.download_button(
-                "Méretkategóriás táblázat letöltése",
-                detail.to_csv(sep=";").encode("utf-8-sig"),
-                file_name=f"kap_meretkategoria_{base_year}.csv",
-                mime="text/csv",
+                "Méretkategóriás táblázat letöltése (Excel)",
+                data=tables_to_xlsx({"Méretkategóriák": detail}),
+                file_name=f"kap_meretkategoria_{base_year}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
+            base_summary = compute_dabis_support_summary(data)
             with st.expander(f"Jogosultak és területek a {base_year}-es bázisban"):
                 st.dataframe(
-                    compute_dabis_support_summary(data),
+                    base_summary,
                     hide_index=True,
                     width="stretch",
                 )
+                st.download_button(
+                    "Jogosultak és területek letöltése (Excel)",
+                    data=tables_to_xlsx({"Jogosultak és területek": base_summary}),
+                    file_name=f"kap_jogosult_terulet_{base_year}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
             with st.expander("Elvonás bontása · fiatal és nem fiatal gazdálkodók"):
                 col1, col2 = st.columns(2)
+
                 with col1:
                     st.write("Fiatal gazdálkodók")
                     st.dataframe(
-                        summarize_reduction_breakdown(
-                            data,
-                            config.dabis_per_ha,
-                            config.yfs_per_ha,
-                            config.redistributive_per_ha,
-                            config.policy,
-                            "yf",
-                        ),
+                        reductions["young"],
                         hide_index=True,
                         width="stretch",
                     )
+                    st.download_button(
+                        "Fiatal gazdálkodók elvonása (Excel)",
+                        data=tables_to_xlsx({"Fiatalok": reductions["young"]}),
+                        file_name=f"kap_elvonas_fiatal_{base_year}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
                 with col2:
                     st.write("Nem fiatal gazdálkodók")
                     st.dataframe(
-                        summarize_reduction_breakdown(
-                            data,
-                            config.dabis_per_ha,
-                            0,
-                            config.redistributive_per_ha,
-                            config.policy,
-                            "not-yf",
-                        ),
+                        reductions["non_young"],
                         hide_index=True,
                         width="stretch",
                     )
+                    st.download_button(
+                        "Nem fiatal gazdálkodók elvonása (Excel)",
+                        data=tables_to_xlsx({"Nem fiatalok": reductions["non_young"]}),
+                        file_name=f"kap_elvonas_nem_fiatal_{base_year}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+            st.divider()
+            st.download_button(
+                "Összes táblázat letöltése (Excel)",
+                data=tables_to_xlsx(
+                    {
+                        "Üzemméretek": overview,
+                        "Elvonás": reduction_display,
+                        "Méretkategóriák": detail,
+                        "Jogosultak és területek": base_summary,
+                        "Fiatalok": reductions["young"],
+                        "Nem fiatalok": reductions["non_young"],
+                    }
+                ),
+                file_name=f"kap_osszes_tabla_{base_year}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+            )

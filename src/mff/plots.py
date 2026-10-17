@@ -7,6 +7,7 @@ import pandas as pd
 import seaborn as sns
 from matplotlib.axes import Axes
 from matplotlib.container import BarContainer
+from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import FuncFormatter, MultipleLocator, PercentFormatter
 from numpy.typing import NDArray
@@ -21,7 +22,6 @@ from mff.new_cap import (
     apply_reductions_vec,
     cal_redist_vec,
     calc_ratio_subs,
-    calc_thresholds,
     compute_capped_subsidies,
     compute_current_support,
     find_cur_new_equal_roots,
@@ -41,7 +41,11 @@ class PolicyParams:
     dabis_policy: DabisPolicy = DEFAULT_DABIS_POLICY
 
 
-def plot_paid_support(gross, x_values, policy: PolicyParams) -> np.ndarray:
+def plot_paid_support(
+    gross: pd.Series | NDArray[np.float64],
+    x_values: NDArray[np.float64],
+    policy: PolicyParams,
+) -> NDArray[np.float64]:
     """Apply degressivity and capping excluding YFS when requested."""
     yfs = policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
     exempt = yfs if policy.dabis_policy.exclude_young_farmer else 0.0
@@ -98,14 +102,26 @@ def _thresholds_in_ha(
 ) -> list[tuple[float, str]]:
     if not items:
         return []
-    gross_thresholds = [threshold for threshold, _ in items]
-    hectares = calc_thresholds(
-        gross_thresholds,
-        policy.base_payment_per_ha,
-        policy.redist_params,
-        0.0 if policy.dabis_policy.exclude_young_farmer else policy.yfs_per_ha,
-    )
-    return list(zip(hectares, [label for _, label in items], strict=True))
+
+    dabis = policy.base_payment_per_ha
+    yfs = 0.0 if policy.dabis_policy.exclude_young_farmer else policy.yfs_per_ha
+    cap = policy.yfs_cap_ha
+
+    def to_hectares(threshold: float) -> float:
+        first_rate = dabis + yfs
+
+        if first_rate <= 0:
+            return float("inf")
+
+        if threshold <= first_rate * cap:
+            return threshold / first_rate
+
+        if dabis <= 0:
+            return float("inf")
+
+        return cap + (threshold - first_rate * cap) / dabis
+
+    return [(to_hectares(threshold), label) for threshold, label in items]
 
 
 def plot_per_ha(
@@ -131,7 +147,9 @@ def plot_per_ha(
     y_values_capping_per_ha = plot_paid_support(gross, x_values, policy) / x_values
 
     y_values_current_per_ha = (
-        np.array([compute_current_support(x, policy.yfs_per_ha) for x in x_values])
+        np.array(
+            [compute_current_support(x, bool(policy.yfs_per_ha)) for x in x_values]
+        )
         / x_values
     )
 
@@ -140,6 +158,7 @@ def plot_per_ha(
         policy.redist_params,
         policy.yfs_per_ha,
         policy.dabis_policy,
+        yfs_cap_ha=policy.yfs_cap_ha,
     )
 
     # Only plot equality points that are inside the plotted range
@@ -293,13 +312,16 @@ def plot_total(
 
     y_values_capping = plot_paid_support(gross, x_values, policy)
 
-    y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
+    y_values_current = [
+        compute_current_support(x, bool(policy.yfs_per_ha)) for x in x_values
+    ]
 
     zero_crossings = find_cur_new_equal_roots(
         policy.base_payment_per_ha,
         policy.redist_params,
         policy.yfs_per_ha,
         policy.dabis_policy,
+        yfs_cap_ha=policy.yfs_cap_ha,
     )
 
     zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
@@ -448,7 +470,9 @@ def plot_diff_dual_axis(
 
     y_values_capping = plot_paid_support(gross, x_values, policy)
 
-    y_values_current = [compute_current_support(x, policy.yfs_per_ha) for x in x_values]
+    y_values_current = [
+        compute_current_support(x, bool(policy.yfs_per_ha)) for x in x_values
+    ]
 
     diff_pct = [
         (cap - curr) / curr * 100 if curr != 0 else 0
@@ -467,6 +491,7 @@ def plot_diff_dual_axis(
             policy.yfs_per_ha,
             policy.redist_params,
             policy.dabis_policy,
+            yfs_cap_ha=policy.yfs_cap_ha,
         )
         peak_y = 100 * calc_ratio_subs(
             peak_x,
@@ -474,6 +499,7 @@ def plot_diff_dual_axis(
             policy.yfs_per_ha,
             policy.redist_params,
             policy.dabis_policy,
+            yfs_cap_ha=policy.yfs_cap_ha,
         )
 
     peak_x_rounded = int(c_round(peak_x, 0))
@@ -485,6 +511,7 @@ def plot_diff_dual_axis(
         policy.redist_params,
         policy.yfs_per_ha,
         policy.dabis_policy,
+        yfs_cap_ha=policy.yfs_cap_ha,
     )
 
     zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
@@ -886,10 +913,13 @@ def plot_diff_pct(
         + cal_redist_vec(x_values, policy.redist_params)
     )
 
-    y_values_capping = plot_paid_support(gross, x_values, policy)
+    y_values_capping = np.asarray(
+        plot_paid_support(gross, x_values, policy),
+        dtype=np.float64,
+    )
 
     y_values_current = np.asarray(
-        [compute_current_support(x, policy.yfs_per_ha) for x in x_values],
+        [compute_current_support(x, bool(policy.yfs_per_ha)) for x in x_values],
         dtype=float,
     )
 
@@ -913,9 +943,9 @@ def plot_diff_pct(
     crossing_idx = np.flatnonzero(diff[:-1] * diff[1:] < 0)
     zero_crossings: list[float] = []
 
-    for i in crossing_idx:
-        x1, x2 = x_values[i], x_values[i + 1]
-        y1, y2 = diff[i], diff[i + 1]
+    for idx in crossing_idx:
+        x1, x2 = x_values[idx], x_values[idx + 1]
+        y1, y2 = diff[idx], diff[idx + 1]
         zero_crossings.append(float(x1 - y1 * (x2 - x1) / (y2 - y1)))
 
     plt.style.use("seaborn-v0_8-whitegrid")
@@ -1147,7 +1177,7 @@ def plot_allocation_with_fixed_rate(
     lines = [line1, line2, fixed_line]
     ax1.legend(
         lines,
-        [line.get_label() for line in lines],
+        [str(line.get_label()) for line in lines],
         loc="best",
         frameon=True,
     )
@@ -1866,7 +1896,7 @@ def plot_yfs_distribution(data: pd.DataFrame, threshold: float) -> None:
     plt.show()
 
 
-def add_labels(ax, bars):
+def add_labels(ax: Axes, bars: BarContainer | Iterable[Rectangle]) -> None:
     for bar in bars:
         h = bar.get_height()
         ax.text(
@@ -2140,3 +2170,111 @@ def plot_cis_quantity_distribution_by_area_class(
 
     plt.tight_layout()
     plt.show()
+
+
+def plot_support_comparison_by_area_class(
+    grouped: pd.DataFrame,
+) -> Figure:
+    """Compare current and new support across farm-size categories."""
+
+    categories = grouped.index.astype(str).tolist()
+    current_meur = grouped["total_subs_cur"].to_numpy() / 1e6
+    new_meur = grouped["total_subs_capped"].to_numpy() / 1e6
+    pct_change = grouped["avg_change"].to_numpy()
+
+    x = np.arange(len(categories))
+    width = 0.36
+
+    def add_labels(ax, bars, decimals=1, suffix=""):
+        ymax = 0
+        for bar in bars:
+            h = bar.get_height()
+            ymax = max(ymax, h)
+            ax.annotate(
+                f"{h:.{decimals}f}{suffix}",
+                xy=(bar.get_x() + bar.get_width() / 2, h),
+                xytext=(0, 4 if h >= 0 else -4),
+                textcoords="offset points",
+                ha="center",
+                va="bottom" if h >= 0 else "top",
+                fontsize=9,
+            )
+        return ymax
+
+    fig, (ax1, ax2) = plt.subplots(
+        2,
+        1,
+        figsize=(11, 8),
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.2, 1]},
+    )
+
+    # Current and new support
+    bars1 = ax1.bar(
+        x - width / 2,
+        current_meur,
+        width,
+        label="Jelenlegi",
+        color="#477ea6",
+    )
+
+    bars2 = ax1.bar(
+        x + width / 2,
+        new_meur,
+        width,
+        label="Új",
+        color="#0d9871",
+    )
+
+    max1 = add_labels(ax1, bars1, decimals=1)
+    max2 = add_labels(ax1, bars2, decimals=1)
+    ymax = max(max1, max2)
+
+    ax1.set_ylabel("Támogatás (M€)", fontsize=11, fontweight="bold")
+    ax1.set_title(
+        "Jelenlegi és új támogatás méretkategóriánként",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax1.legend(loc="upper right", frameon=True)
+    ax1.grid(axis="y", linestyle="--", alpha=0.5)
+    ax1.set_axisbelow(True)
+    ax1.set_ylim(0, ymax * 1.18 if ymax > 0 else 1)
+
+    # Relative changes
+    colors = ["#0d9871" if v >= 0 else "#b22222" for v in pct_change]
+
+    bars3 = ax2.bar(
+        x,
+        pct_change,
+        color=colors,
+        width=0.55,
+    )
+
+    values = pct_change[np.isfinite(pct_change)]
+
+    if len(values):
+        min_val = min(0.0, float(values.min()))
+        max_val = max(0.0, float(values.max()))
+        margin = max((max_val - min_val) * 0.15, 1.0)
+
+        ax2.set_ylim(min_val - margin, max_val + margin)
+
+    add_labels(ax2, bars3, decimals=1, suffix="%")
+
+    ax2.axhline(0, color="black", linewidth=1)
+    ax2.set_ylabel("Változás (%)", fontsize=11, fontweight="bold")
+    ax2.set_title(
+        "Relatív változás méretkategóriánként",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(categories)
+    ax2.set_xlabel("Méretkategória", fontsize=11, fontweight="bold")
+    ax2.grid(axis="y", linestyle="--", alpha=0.5)
+    ax2.set_axisbelow(True)
+
+    fig.tight_layout()
+
+    return fig

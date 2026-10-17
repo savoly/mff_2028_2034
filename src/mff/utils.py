@@ -7,9 +7,13 @@ round_context = getcontext()
 round_context.rounding = ROUND_HALF_UP
 
 
-def c_round(x: float, digits: int, precision: int = 10) -> float:
-    tmp = round(Decimal(x), precision)
-    return float(tmp.__round__(digits))
+def c_round(x: float, digits: int = 0) -> float:
+    return float(
+        Decimal(str(x)).quantize(
+            Decimal(1).scaleb(-digits),
+            rounding=ROUND_HALF_UP,
+        )
+    )
 
 
 def find_columns(

@@ -1,7 +1,9 @@
 from collections.abc import Iterable
+from typing import TypedDict
 
 import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
 from scipy.optimize import RootResults, minimize, root_scalar
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -17,13 +19,21 @@ from mff.utils import c_round
 
 Number = float | int
 
-PAYMENTS = {
-    "BISS_PER_HA_2024": 148.38544462390817,
-    "YFS_PER_HA_2024": 93.56369030533665,
+
+class Payments(TypedDict):
+    BISS_PER_HA_2024: float
+    YFS_PER_HA_2024: float
+    REDIST_2024: tuple[float, float]
+
+
+PAYMENTS: Payments = {
+    "BISS_PER_HA_2024": 148.3869382589451,
+    "YFS_PER_HA_2024": 90.15448972851425,
+    "REDIST_2024": (87.72401387811534, 43.86200693905767),
 }
 
 
-def query_mepar_data(engine) -> pd.DataFrame:
+def query_mepar_data(engine: Engine) -> pd.DataFrame:
     QUERY = """
     SELECT DISTINCT ON (t.regszam)
               t.regszam,
@@ -185,13 +195,14 @@ def find_cur_new_equal_root(
     redist_per_ha: tuple[float, float],
     yfs_per_ha: float,
     policy: DabisPolicy = DEFAULT_DABIS_POLICY,
+    yfs_cap_ha=300.0,
 ) -> float:
     def f(x):
-        yfs = yfs_per_ha * min(300, x)
+        yfs = yfs_per_ha * min(yfs_cap_ha, x)
         exempt = yfs if policy.exclude_young_farmer else 0.0
         gross = eur_per_ha * x + yfs + cal_redist(x, redist_per_ha)
         paid = apply_reductions(gross - exempt, policy) + exempt
-        return paid - compute_current_support(x, yfs_per_ha)
+        return paid - compute_current_support(x, bool(yfs_per_ha))
 
     sol = root_scalar(f, bracket=(1e-3, 4e9), method="brentq")
     return sol.root
@@ -205,33 +216,34 @@ def find_cur_new_equal_roots(
     x_min: float = 1e-3,
     x_max: float = 10_000,
     n: int = 10_000,
+    yfs_cap_ha=300.0,
 ) -> list[float]:
     x_values = np.geomspace(x_min, x_max, n)
 
     gross = (
         eur_per_ha * x_values
-        + yfs_per_ha * np.minimum(300, x_values)
+        + yfs_per_ha * np.minimum(yfs_cap_ha, x_values)
         + cal_redist_vec(x_values, redist_per_ha)
     )
 
-    yfs = yfs_per_ha * np.minimum(300, x_values)
+    yfs = yfs_per_ha * np.minimum(yfs_cap_ha, x_values)
     exempt = yfs if policy.exclude_young_farmer else 0.0
     new_support = (
         apply_reductions_vec(pd.Series(gross - exempt), policy).to_numpy() + exempt
     )
 
     current_support = np.array(
-        [compute_current_support(x, yfs_per_ha) for x in x_values]
+        [compute_current_support(x, bool(yfs_per_ha)) for x in x_values]
     )
 
     f_values = new_support - current_support
 
     def f(x: float) -> float:
-        yfs = yfs_per_ha * min(300, x)
+        yfs = yfs_per_ha * min(yfs_cap_ha, x)
         exempt = yfs if policy.exclude_young_farmer else 0.0
         gross = eur_per_ha * x + yfs + cal_redist(x, redist_per_ha)
         paid = apply_reductions(gross - exempt, policy) + exempt
-        return paid - compute_current_support(x, yfs_per_ha)
+        return paid - compute_current_support(x, bool(yfs_per_ha))
 
     roots = []
 
@@ -261,12 +273,14 @@ def apply_reductions_vec(
     policy: DabisPolicy = DEFAULT_DABIS_POLICY,
 ) -> pd.Series:
     result = apply_degression(series, policy)
-    return result["dabis_paid"].rename(series.name)
+    paid = result["dabis_paid"]
+    paid.name = series.name
+    return paid
 
 
 def cal_redist_vec(
     biss_ter: pd.Series | np.ndarray,
-    redist_per_ha=(87.72217967580578, 43.86108983790289),
+    redist_per_ha: tuple[float, float] = PAYMENTS["REDIST_2024"],
 ) -> np.ndarray:
     x = np.asarray(biss_ter, dtype=float)
 
@@ -279,7 +293,7 @@ def cal_redist_vec(
 
 def cal_redist(
     biss_ter: float,
-    redist_per_ha: tuple[float, float] = (87.72217967580578, 43.86108983790289),
+    redist_per_ha: tuple[float, float] = PAYMENTS["REDIST_2024"],
 ) -> float:
     if biss_ter <= 1200 and biss_ter != 0:
         part1 = redist_per_ha[0] * min(10, biss_ter)
@@ -980,7 +994,9 @@ def calc_thresholds(
     return result
 
 
-def create_dabis_summary(df: pd.DataFrame, bins, labels) -> pd.DataFrame:
+def create_dabis_summary(
+    df: pd.DataFrame, bins: list[float], labels: list[str]
+) -> pd.DataFrame:
     df["Üzemméret kategória"] = pd.cut(
         df["area_biss_criss"], bins=bins, labels=labels, right=False
     )
@@ -1070,36 +1086,49 @@ def calc_degressive_and_capping_steps(
 
 
 def calc_ratio_subs(
-    x,
-    eur_per_ha,
-    yfs_per_ha,
-    redist_per_ha,
-    policy=DEFAULT_DABIS_POLICY,
-):
-    yfs = yfs_per_ha * min(300, x)
+    x: float,
+    eur_per_ha: float,
+    yfs_per_ha: float,
+    redist_per_ha: tuple[float, float],
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
+    yfs_cap_ha: float = 300.0,
+) -> float:
+    yfs = yfs_per_ha * min(yfs_cap_ha, x)
     exempt = yfs if policy.exclude_young_farmer else 0.0
 
     gross = eur_per_ha * x + yfs + cal_redist(x, redist_per_ha)
     new_subs = apply_reductions(gross - exempt, policy) + exempt
 
-    cur_subs = compute_current_support(x, yfs_per_ha)
+    cur_subs = compute_current_support(x, bool(yfs_per_ha))
     return (new_subs - cur_subs) / (cur_subs + 1e-12)
 
 
 def _neg_ratio_logz(
-    z, eur_per_ha, yfs_per_ha, redist_per_ha, policy=DEFAULT_DABIS_POLICY
-):
+    z: NDArray[np.float64],
+    eur_per_ha: float,
+    yfs_per_ha: float,
+    redist_per_ha: tuple[float, float],
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
+    yfs_cap_ha: float = 300.0,
+) -> float:
     x = float(np.exp(z[0]))  # ensures x > 0
-    return -calc_ratio_subs(x, eur_per_ha, yfs_per_ha, redist_per_ha, policy)
+    return -calc_ratio_subs(
+        x, eur_per_ha, yfs_per_ha, redist_per_ha, policy, yfs_cap_ha
+    )
 
 
 def maximize_ratio(
-    x0, eur_per_ha, yfs_per_ha, redist_per_ha, policy=DEFAULT_DABIS_POLICY
-):
+    x0: float,
+    eur_per_ha: float,
+    yfs_per_ha: float,
+    redist_per_ha: tuple[float, float],
+    policy: DabisPolicy = DEFAULT_DABIS_POLICY,
+    yfs_cap_ha: float = 300.0,
+) -> float:
     res = minimize(
         _neg_ratio_logz,
         [np.log(max(x0, 1e-8))],
-        args=(eur_per_ha, yfs_per_ha, redist_per_ha, policy),
+        args=(eur_per_ha, yfs_per_ha, redist_per_ha, policy, yfs_cap_ha),
         method="Nelder-Mead",
     )
     return float(np.exp(res.x[0]))

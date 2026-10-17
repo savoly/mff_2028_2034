@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 
@@ -238,8 +238,8 @@ def build_gross_dabis(
     result = pd.DataFrame(index=data.index)
 
     for name, values in components.items():
-        if np.isscalar(values):
-            component = np.full(len(data), float(values))
+        if isinstance(values, (int, float, np.integer, np.floating)):
+            component = np.full(len(data), float(values), dtype=float)
         elif isinstance(values, pd.Series):
             component = values.reindex(data.index).fillna(0).to_numpy(dtype=float)
         else:
@@ -247,6 +247,7 @@ def build_gross_dabis(
 
         if len(component) != len(data):
             raise ValueError(f"Component {name!r} has incompatible length")
+
         if np.any(component < 0):
             raise ValueError(f"Component {name!r} contains negative values")
 
@@ -378,7 +379,9 @@ def find_base_rate_for_paid_budget(
     data: pd.DataFrame,
     budget_eur: float,
     *,
-    component_builder,
+    component_builder: Callable[
+        [float], Mapping[str, pd.Series | np.ndarray | Sequence[float] | float]
+    ],
     policy: DabisPolicy = DEFAULT_DABIS_POLICY,
     lower_rate: float = 0.0,
     upper_rate: float = 500.0,
