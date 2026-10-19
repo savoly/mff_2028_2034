@@ -196,13 +196,16 @@ def find_cur_new_equal_root(
     yfs_per_ha: float,
     policy: DabisPolicy = DEFAULT_DABIS_POLICY,
     yfs_cap_ha=300.0,
+    is_young_farmer: bool | None = None,
 ) -> float:
+    current_young = bool(yfs_per_ha) if is_young_farmer is None else is_young_farmer
+
     def f(x):
         yfs = yfs_per_ha * min(yfs_cap_ha, x)
         exempt = yfs if policy.exclude_young_farmer else 0.0
         gross = eur_per_ha * x + yfs + cal_redist(x, redist_per_ha)
         paid = apply_reductions(gross - exempt, policy) + exempt
-        return paid - compute_current_support(x, bool(yfs_per_ha))
+        return paid - compute_current_support(x, current_young)
 
     sol = root_scalar(f, bracket=(1e-3, 4e9), method="brentq")
     return sol.root
@@ -217,7 +220,9 @@ def find_cur_new_equal_roots(
     x_max: float = 10_000,
     n: int = 10_000,
     yfs_cap_ha=300.0,
+    is_young_farmer: bool | None = None,
 ) -> list[float]:
+    current_young = bool(yfs_per_ha) if is_young_farmer is None else is_young_farmer
     x_values = np.geomspace(x_min, x_max, n)
 
     gross = (
@@ -233,7 +238,7 @@ def find_cur_new_equal_roots(
     )
 
     current_support = np.array(
-        [compute_current_support(x, bool(yfs_per_ha)) for x in x_values]
+        [compute_current_support(x, current_young) for x in x_values]
     )
 
     f_values = new_support - current_support
@@ -243,7 +248,7 @@ def find_cur_new_equal_roots(
         exempt = yfs if policy.exclude_young_farmer else 0.0
         gross = eur_per_ha * x + yfs + cal_redist(x, redist_per_ha)
         paid = apply_reductions(gross - exempt, policy) + exempt
-        return paid - compute_current_support(x, bool(yfs_per_ha))
+        return paid - compute_current_support(x, current_young)
 
     roots = []
 
@@ -1092,6 +1097,7 @@ def calc_ratio_subs(
     redist_per_ha: tuple[float, float],
     policy: DabisPolicy = DEFAULT_DABIS_POLICY,
     yfs_cap_ha: float = 300.0,
+    is_young_farmer: bool | None = None,
 ) -> float:
     yfs = yfs_per_ha * min(yfs_cap_ha, x)
     exempt = yfs if policy.exclude_young_farmer else 0.0
@@ -1099,7 +1105,8 @@ def calc_ratio_subs(
     gross = eur_per_ha * x + yfs + cal_redist(x, redist_per_ha)
     new_subs = apply_reductions(gross - exempt, policy) + exempt
 
-    cur_subs = compute_current_support(x, bool(yfs_per_ha))
+    current_young = bool(yfs_per_ha) if is_young_farmer is None else is_young_farmer
+    cur_subs = compute_current_support(x, current_young)
     return (new_subs - cur_subs) / (cur_subs + 1e-12)
 
 
@@ -1110,10 +1117,17 @@ def _neg_ratio_logz(
     redist_per_ha: tuple[float, float],
     policy: DabisPolicy = DEFAULT_DABIS_POLICY,
     yfs_cap_ha: float = 300.0,
+    is_young_farmer: bool | None = None,
 ) -> float:
     x = float(np.exp(z[0]))  # ensures x > 0
     return -calc_ratio_subs(
-        x, eur_per_ha, yfs_per_ha, redist_per_ha, policy, yfs_cap_ha
+        x,
+        eur_per_ha,
+        yfs_per_ha,
+        redist_per_ha,
+        policy,
+        yfs_cap_ha,
+        is_young_farmer,
     )
 
 
@@ -1124,11 +1138,19 @@ def maximize_ratio(
     redist_per_ha: tuple[float, float],
     policy: DabisPolicy = DEFAULT_DABIS_POLICY,
     yfs_cap_ha: float = 300.0,
+    is_young_farmer: bool | None = None,
 ) -> float:
     res = minimize(
         _neg_ratio_logz,
         [np.log(max(x0, 1e-8))],
-        args=(eur_per_ha, yfs_per_ha, redist_per_ha, policy, yfs_cap_ha),
+        args=(
+            eur_per_ha,
+            yfs_per_ha,
+            redist_per_ha,
+            policy,
+            yfs_cap_ha,
+            is_young_farmer,
+        ),
         method="Nelder-Mead",
     )
     return float(np.exp(res.x[0]))

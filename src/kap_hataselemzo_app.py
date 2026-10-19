@@ -281,6 +281,7 @@ def notebook_plot(
         redist_params=config.redistributive_per_ha,
         yfs_cap_ha=config.yfs_max_ha,
         dabis_policy=config.policy,
+        is_young_farmer=is_young,
     )
     group = "fiatal gazdálkodó" if is_young else "nem fiatal gazdálkodó"
     old_label = "BISS+CRISS+CIS-YF" if is_young else "BISS+CRISS"
@@ -682,22 +683,14 @@ with farm_tab:
         ["Fajlagos támogatás", "Összes támogatás", "Százalékos eltérés", "Degresszió"],
         horizontal=True,
     )
-    if is_young and config.yfs_per_ha == 0 and chart_kind != "Degresszió":
-        st.warning(
-            "A plots.py az új fiatal gazda ráta előjeléből következtet a jelenlegi fiatal státuszra. Nulla új ráta mellett ez az ábra félrevezető lenne; az üzemszintű kártyák továbbra is helyesek."
+
+    try:
+        st.image(
+            notebook_plot(chart_kind, config, is_young),
+            width="stretch",
         )
-    else:
-        try:
-            st.image(
-                notebook_plot(
-                    chart_kind,
-                    config,
-                    is_young,
-                ),
-                width="stretch",
-            )
-        except ValueError as exc:
-            st.warning(f"Az ábra ezekkel a paraméterekkel nem készíthető el: {exc}")
+    except ValueError as exc:
+        st.warning(f"Az ábra ezekkel a paraméterekkel nem készíthető el: {exc}")
 
     with st.expander("Jellemző üzemméretek"):
         overview = summarize_example_farms(config, is_young)

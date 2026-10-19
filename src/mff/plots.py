@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
+from itertools import pairwise
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,6 +21,7 @@ from mff.dabis_engine import (
 from mff.new_cap import (
     analyze_by_area_categories,
     apply_reductions_vec,
+    cal_redist,
     cal_redist_vec,
     calc_ratio_subs,
     compute_capped_subsidies,
@@ -39,6 +41,7 @@ class PolicyParams:
     redist_params: tuple[float, float]
     yfs_cap_ha: float = 300.0
     dabis_policy: DabisPolicy = DEFAULT_DABIS_POLICY
+    is_young_farmer: bool | None = None  # None preserves the old inference.
 
 
 def plot_paid_support(
@@ -100,30 +103,100 @@ def _thresholds_in_ha(
     policy: PolicyParams,
     items: list[tuple[float, str]],
 ) -> list[tuple[float, str]]:
+    """Find hectare positions where support subject to degression reaches a threshold.
+
+    CRISS ends above 1,200 ha, so the gross-support function is discontinuous.
+    Solve each linear interval separately rather than across the discontinuity.
+    """
     if not items:
         return []
 
-    dabis = policy.base_payment_per_ha
-    yfs = 0.0 if policy.dabis_policy.exclude_young_farmer else policy.yfs_per_ha
-    cap = policy.yfs_cap_ha
+    upper = _plot_gross_upper(policy) / policy.base_payment_per_ha
+    boundaries = sorted(
+        {
+            x
+            for x in (0.0, 10.0, 150.0, 1200.0, policy.yfs_cap_ha, upper)
+            if 0 <= x <= upper
+        }
+    )
+    yfs_rate = 0.0 if policy.dabis_policy.exclude_young_farmer else policy.yfs_per_ha
 
-    def to_hectares(threshold: float) -> float:
-        first_rate = dabis + yfs
+    def gross(ha: float, *, above_1200: bool) -> float:
+        return (
+            policy.base_payment_per_ha * ha
+            + yfs_rate * min(ha, policy.yfs_cap_ha)
+            + (0.0 if above_1200 else cal_redist(ha, policy.redist_params))
+        )
 
-        if first_rate <= 0:
-            return float("inf")
+    results: list[tuple[float, str]] = []
+    for threshold, label in items:
+        for left, right in pairwise(boundaries):
+            above_1200 = left >= 1200.0
+            low = gross(left, above_1200=above_1200)
+            high = gross(right, above_1200=above_1200)
 
-        if threshold <= first_rate * cap:
-            return threshold / first_rate
+            if high == low or not min(low, high) <= threshold <= max(low, high):
+                continue
 
-        if dabis <= 0:
-            return float("inf")
+            ha = left + (threshold - low) * (right - left) / (high - low)
+            if above_1200 and ha <= 1200.0:
+                continue  # The right-hand value at 1,200 ha is not attained.
 
-        return cap + (threshold - first_rate * cap) / dabis
+            if not any(
+                name == label and np.isclose(x, ha, rtol=0, atol=1e-8)
+                for x, name in results
+            ):
+                results.append((float(ha), label))
 
-    return [(to_hectares(threshold), label) for threshold, label in items]
+    return sorted(results, key=lambda item: item[0])
 
 
+def _support_curves(
+    policy: PolicyParams,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Farm sizes, gross support, and paid support for plotting."""
+    upper = _plot_gross_upper(policy) / policy.base_payment_per_ha
+    hectares = np.linspace(0.01, upper, 100 * int(upper / 10) + 1)
+    gross = (
+        policy.base_payment_per_ha * hectares
+        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, hectares)
+        + cal_redist_vec(hectares, policy.redist_params)
+    )
+    paid = plot_paid_support(gross, hectares, policy)
+    return hectares, gross, paid
+
+
+def _current_young_farmer(policy: PolicyParams) -> bool:
+    if policy.is_young_farmer is not None:
+        return policy.is_young_farmer
+    return policy.yfs_per_ha > 0  # Backward compatibility with existing notebooks.
+
+
+def _current_support_curve(
+    policy: PolicyParams, hectares: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    return np.asarray(
+        [
+            compute_current_support(float(x), _current_young_farmer(policy))
+            for x in hectares
+        ],
+        dtype=np.float64,
+    )
+
+
+def _equality_points(policy: PolicyParams, upper: float) -> list[float]:
+    roots = find_cur_new_equal_roots(
+        policy.base_payment_per_ha,
+        policy.redist_params,
+        policy.yfs_per_ha,
+        policy.dabis_policy,
+        yfs_cap_ha=policy.yfs_cap_ha,
+        is_young_farmer=_current_young_farmer(policy),
+    )
+    return [x for x in roots if x <= upper]
+
+
+@plt.style.context("seaborn-v0_8-whitegrid")
 def plot_per_ha(
     policy: PolicyParams,
     label1: str,
@@ -131,43 +204,17 @@ def plot_per_ha(
     title: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = _plot_gross_upper(policy) / policy.base_payment_per_ha
-    x_values = np.linspace(
-        0.01,
-        ha_upper_l,
-        100 * int(ha_upper_l / 10) + 1,
-    )
+    x_values, _, y_values_capping = _support_curves(policy)
+    ha_upper_l = float(x_values[-1])
 
-    gross = (
-        policy.base_payment_per_ha * x_values
-        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
-        + cal_redist_vec(x_values, policy.redist_params)
-    )
+    y_values_capping_per_ha = y_values_capping / x_values
+    y_values_current_per_ha = _current_support_curve(policy, x_values) / x_values
 
-    y_values_capping_per_ha = plot_paid_support(gross, x_values, policy) / x_values
-
-    y_values_current_per_ha = (
-        np.array(
-            [compute_current_support(x, bool(policy.yfs_per_ha)) for x in x_values]
-        )
-        / x_values
-    )
-
-    zero_crossings = find_cur_new_equal_roots(
-        policy.base_payment_per_ha,
-        policy.redist_params,
-        policy.yfs_per_ha,
-        policy.dabis_policy,
-        yfs_cap_ha=policy.yfs_cap_ha,
-    )
-
-    # Only plot equality points that are inside the plotted range
-    zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
+    zero_crossings = _equality_points(policy, ha_upper_l)
 
     threshold_items = _policy_threshold_items(policy)
     thresholds_ha = _thresholds_in_ha(policy, threshold_items)
 
-    plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(12, 7))
 
     ax.plot(
@@ -290,6 +337,7 @@ def plot_per_ha(
     plt.show()
 
 
+@plt.style.context("seaborn-v0_8-whitegrid")
 def plot_total(
     policy: PolicyParams,
     label1: str,
@@ -297,39 +345,16 @@ def plot_total(
     title: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = _plot_gross_upper(policy) / policy.base_payment_per_ha
-    x_values = np.linspace(
-        0.01,
-        ha_upper_l,
-        100 * int(ha_upper_l / 10) + 1,
-    )
+    x_values, _, y_values_capping = _support_curves(policy)
+    ha_upper_l = float(x_values[-1])
 
-    gross = (
-        policy.base_payment_per_ha * x_values
-        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
-        + cal_redist_vec(x_values, policy.redist_params)
-    )
+    y_values_current = _current_support_curve(policy, x_values)
 
-    y_values_capping = plot_paid_support(gross, x_values, policy)
-
-    y_values_current = [
-        compute_current_support(x, bool(policy.yfs_per_ha)) for x in x_values
-    ]
-
-    zero_crossings = find_cur_new_equal_roots(
-        policy.base_payment_per_ha,
-        policy.redist_params,
-        policy.yfs_per_ha,
-        policy.dabis_policy,
-        yfs_cap_ha=policy.yfs_cap_ha,
-    )
-
-    zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
+    zero_crossings = _equality_points(policy, ha_upper_l)
 
     threshold_items = _policy_threshold_items(policy)
     thresholds_ha = _thresholds_in_ha(policy, threshold_items)
 
-    plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(12, 7))
 
     ax.plot(
@@ -447,6 +472,7 @@ def plot_total(
     plt.show()
 
 
+@plt.style.context("seaborn-v0_8-whitegrid")
 def plot_diff_dual_axis(
     policy: PolicyParams,
     title_name: str,
@@ -455,24 +481,10 @@ def plot_diff_dual_axis(
     output_path: str,
     cum_mode: str = "farms",
 ) -> None:
-    ha_upper_l = _plot_gross_upper(policy) / policy.base_payment_per_ha
-    x_values = np.linspace(
-        0.01,
-        ha_upper_l,
-        100 * int(ha_upper_l / 10) + 1,
-    )
+    x_values, _, y_values_capping = _support_curves(policy)
+    ha_upper_l = float(x_values[-1])
 
-    gross = (
-        policy.base_payment_per_ha * x_values
-        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
-        + cal_redist_vec(x_values, policy.redist_params)
-    )
-
-    y_values_capping = plot_paid_support(gross, x_values, policy)
-
-    y_values_current = [
-        compute_current_support(x, bool(policy.yfs_per_ha)) for x in x_values
-    ]
+    y_values_current = _current_support_curve(policy, x_values)
 
     diff_pct = [
         (cap - curr) / curr * 100 if curr != 0 else 0
@@ -492,6 +504,7 @@ def plot_diff_dual_axis(
             policy.redist_params,
             policy.dabis_policy,
             yfs_cap_ha=policy.yfs_cap_ha,
+            is_young_farmer=_current_young_farmer(policy),
         )
         peak_y = 100 * calc_ratio_subs(
             peak_x,
@@ -500,21 +513,14 @@ def plot_diff_dual_axis(
             policy.redist_params,
             policy.dabis_policy,
             yfs_cap_ha=policy.yfs_cap_ha,
+            is_young_farmer=_current_young_farmer(policy),
         )
 
     peak_x_rounded = int(c_round(peak_x, 0))
     peak_y_rounded = c_round(peak_y, 2)
 
     # Equality points
-    zero_crossings = find_cur_new_equal_roots(
-        policy.base_payment_per_ha,
-        policy.redist_params,
-        policy.yfs_per_ha,
-        policy.dabis_policy,
-        yfs_cap_ha=policy.yfs_cap_ha,
-    )
-
-    zero_crossings = [x for x in zero_crossings if x <= ha_upper_l]
+    zero_crossings = _equality_points(policy, ha_upper_l)
 
     # Farm-size distribution
     fa = np.asarray(farm_areas, dtype=float)
@@ -562,11 +568,6 @@ def plot_diff_dual_axis(
 
     else:
         textbox_text = "Nincs egyenlőségi pont a vizsgált tartományban."
-
-    # ------------------------------------------------------------
-    # Plot
-    # ------------------------------------------------------------
-    plt.style.use("seaborn-v0_8-whitegrid")
 
     fig, ax1 = plt.subplots(figsize=(12, 7))
     ax1.set_axisbelow(True)
@@ -849,16 +850,7 @@ def plot_reduction(
     scen_name: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = _plot_gross_upper(policy) / policy.base_payment_per_ha
-    x_values = np.linspace(0.01, ha_upper_l, 100 * int(ha_upper_l / 10) + 1)
-
-    gross = (
-        policy.base_payment_per_ha * x_values
-        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
-        + cal_redist_vec(x_values, policy.redist_params)
-    )
-
-    y_values_capping = plot_paid_support(gross, x_values, policy)
+    x_values, gross, y_values_capping = _support_curves(policy)
 
     percent_diff = (
         np.divide(
@@ -870,7 +862,7 @@ def plot_reduction(
         * 100
     )
 
-    _, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(12, 6))
 
     ax.plot(
         x_values,
@@ -890,38 +882,20 @@ def plot_reduction(
     ax.xaxis.set_major_formatter(formatter)
     ax.yaxis.set_major_formatter(formatter)
 
-    plt.savefig(output_path, dpi=180)
+    fig.savefig(output_path, dpi=300)
     plt.show()
 
 
+@plt.style.context("seaborn-v0_8-whitegrid")
 def plot_diff_pct(
     policy: PolicyParams,
     title_name: str,
     scen_name: str,
     output_path: str,
 ) -> None:
-    ha_upper_l = _plot_gross_upper(policy) / policy.base_payment_per_ha
-    x_values = np.linspace(
-        0.01,
-        ha_upper_l,
-        100 * int(ha_upper_l / 10) + 1,
-    )
+    x_values, _, y_values_capping = _support_curves(policy)
 
-    gross = (
-        policy.base_payment_per_ha * x_values
-        + policy.yfs_per_ha * np.minimum(policy.yfs_cap_ha, x_values)
-        + cal_redist_vec(x_values, policy.redist_params)
-    )
-
-    y_values_capping = np.asarray(
-        plot_paid_support(gross, x_values, policy),
-        dtype=np.float64,
-    )
-
-    y_values_current = np.asarray(
-        [compute_current_support(x, bool(policy.yfs_per_ha)) for x in x_values],
-        dtype=float,
-    )
+    y_values_current = _current_support_curve(policy, x_values)
 
     percent_diff = (
         np.divide(
@@ -948,7 +922,6 @@ def plot_diff_pct(
         y1, y2 = diff[idx], diff[idx + 1]
         zero_crossings.append(float(x1 - y1 * (x2 - x1) / (y2 - y1)))
 
-    plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(12, 6))
 
     ax.plot(
@@ -1232,23 +1205,11 @@ def plot_per_ha_support_comparison_by_area_class(
     bins: list[float],
     labels: list[str],
 ) -> None:
-    data_with_subs = compute_capped_subsidies(
-        data, dabis_per_ha, yfs_per_ha, redist_per_ha
-    )
-    data_with_subs["subs_cur"] = (
-        data_with_subs["subs_biss"]
-        + data_with_subs["subs_redist"]
-        + data_with_subs["subs_yfs"]
+    grouped_result = calc_support_summary_by_area_class(
+        data, dabis_per_ha, redist_per_ha, yfs_per_ha, cal_type, bins, labels
     )
 
-    if cal_type == "csak fiatal gazda":
-        data_with_subs = data_with_subs[data_with_subs["subs_yfs"] > 0]
-    if cal_type == "nem fiatal gazda":
-        data_with_subs = data_with_subs[data_with_subs["subs_yfs"] == 0]
-
-    plot_data = analyze_by_area_categories(
-        data_with_subs, bins=bins, labels=labels
-    ).loc[:, ["avg_subs_per_ha_cur", "avg_subs_per_ha_capped"]]
+    plot_data = grouped_result.loc[:, ["avg_subs_per_ha_cur", "avg_subs_per_ha_capped"]]
 
     plot_data = plot_data[
         plot_data["avg_subs_per_ha_cur"].notna()
@@ -1258,12 +1219,12 @@ def plot_per_ha_support_comparison_by_area_class(
     x = np.arange(len(plot_data))  # number of categories
     width = 0.35  # width of bars
 
-    plt.figure(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(8, 5))
 
     color_current = "#0072B2"
     color_capped = "#009E73"
 
-    bars1 = plt.bar(
+    bars1 = ax.bar(
         x - width / 2,
         plot_data["avg_subs_per_ha_cur"],
         width,
@@ -1271,7 +1232,7 @@ def plot_per_ha_support_comparison_by_area_class(
         color=color_current,
     )
 
-    bars2 = plt.bar(
+    bars2 = ax.bar(
         x + width / 2,
         plot_data["avg_subs_per_ha_capped"],
         width,
@@ -1279,42 +1240,28 @@ def plot_per_ha_support_comparison_by_area_class(
         color=color_capped,
     )
 
-    plt.ylabel("Fajlagos támogatás (EUR/ha)", fontsize=11)
-    plt.xlabel("Méretkategória", fontsize=11)
-    plt.suptitle(
+    ax.set_ylabel("Fajlagos támogatás (EUR/ha)", fontsize=11)
+    ax.set_xlabel("Méretkategória", fontsize=11)
+    fig.suptitle(
         f"Átlagos fajlagos támogatás gazdálkodói méretkategóriák szerint\n({cal_type})",
         fontweight="bold",
     )
-    plt.xticks(x, plot_data.index.astype(str).tolist(), rotation=0, fontsize=10)
-    plt.yticks(fontsize=10)
-    plt.grid(axis="y", linestyle="--", alpha=0.7)
-    plt.legend(prop={"size": 9}, frameon=True)
+    ax.set_xticks(x, plot_data.index.astype(str).tolist())
+    ax.tick_params(axis="x", labelsize=10)
+    ax.tick_params(axis="y", labelsize=10)
+    ax.grid(axis="y", linestyle="--", alpha=0.7)
+    ax.legend(prop={"size": 9}, frameon=True)
 
-    # Add values on top of bars
-    for bar in bars1:
-        height = bar.get_height()
-        plt.text(
-            bar.get_x() + bar.get_width() / 2,
-            height,
-            f"{c_round(height, 2)}",
-            ha="center",
-            va="bottom",
+    for bars in (bars1, bars2):
+        ax.bar_label(
+            bars,
+            fmt=lambda value: f"{c_round(value, 2)}",
+            padding=3,
             fontsize=9,
         )
 
-    for bar in bars2:
-        height = bar.get_height()
-        plt.text(
-            bar.get_x() + bar.get_width() / 2,
-            height,
-            f"{c_round(height, 2)}",
-            ha="center",
-            va="bottom",
-            fontsize=9,
-        )
-
-    plt.tight_layout()
-    plt.savefig(f"output/abra_fajlagos_tam_{cal_type}.png", dpi=300)
+    fig.tight_layout()
+    fig.savefig(f"output/abra_fajlagos_tam_{cal_type}.png", dpi=300)
     plt.show()
 
 
@@ -1327,22 +1274,8 @@ def plot_nfarmer_by_area_class(
     bins: list[float],
     labels: list[str],
 ) -> None:
-    data_with_subs = compute_capped_subsidies(
-        data, dabis_per_ha, yfs_per_ha, redist_per_ha
-    )
-    data_with_subs["subs_cur"] = (
-        data_with_subs["subs_biss"]
-        + data_with_subs["subs_redist"]
-        + data_with_subs["subs_yfs"]
-    )
-
-    if cal_type == "csak fiatal gazda":
-        data_with_subs = data_with_subs[data_with_subs["subs_yfs"] > 0]
-    if cal_type == "nem fiatal gazda":
-        data_with_subs = data_with_subs[data_with_subs["subs_yfs"] == 0]
-
-    grouped_result = analyze_by_area_categories(
-        data_with_subs, bins=bins, labels=labels
+    grouped_result = calc_support_summary_by_area_class(
+        data, dabis_per_ha, redist_per_ha, yfs_per_ha, cal_type, bins, labels
     )
 
     fig, ax1 = plt.subplots(1, 1, figsize=(8, 5))
@@ -1363,15 +1296,12 @@ def plot_nfarmer_by_area_class(
         f"Üzemméret alakulása gazdálkodói méretkategóriák szerint\n({cal_type})".replace(
             ".", ","
         ),
-        # fontsize=12,
         fontweight="bold",
-        # x=0.5,
-        # y=0.95,
     )
 
     ax1.grid(False)
 
-    plt.savefig(f"output/uzemszam_{cal_type}.png", dpi=400)
+    fig.savefig(f"output/uzemszam_{cal_type}.png", dpi=300)
     plt.show()
 
 
@@ -1384,6 +1314,8 @@ def calc_support_summary_by_area_class(
     bins: list[float],
     labels: list[str],
     policy: DabisPolicy = DEFAULT_DABIS_POLICY,
+    *,
+    include_yfs_in_current: bool = True,
 ) -> pd.DataFrame:
     data_with_subs = compute_capped_subsidies(
         data, dabis_per_ha, yfs_per_ha, redist_per_ha, policy
@@ -1391,7 +1323,7 @@ def calc_support_summary_by_area_class(
     data_with_subs["subs_cur"] = (
         data_with_subs["subs_biss"]
         + data_with_subs["subs_redist"]
-        + data_with_subs["subs_yfs"]
+        + (data_with_subs["subs_yfs"] if include_yfs_in_current else 0.0)
     )
 
     if cal_type == "csak fiatal gazda":
@@ -1411,39 +1343,13 @@ def plot_support_summary_by_area_class(
     bins: list[float],
     labels: list[str],
 ) -> None:
-    data_with_subs = compute_capped_subsidies(
-        data, dabis_per_ha, yfs_per_ha, redist_per_ha
-    )
-    data_with_subs["subs_cur"] = (
-        data_with_subs["subs_biss"]
-        + data_with_subs["subs_redist"]
-        + data_with_subs["subs_yfs"]
-    )
-
-    if cal_type == "csak fiatal gazda":
-        data_with_subs = data_with_subs[data_with_subs["subs_yfs"] > 0]
-    if cal_type == "nem fiatal gazda":
-        data_with_subs = data_with_subs[data_with_subs["subs_yfs"] == 0]
-
-    grouped_result = analyze_by_area_categories(
-        data_with_subs, bins=bins, labels=labels
+    grouped_result = calc_support_summary_by_area_class(
+        data, dabis_per_ha, redist_per_ha, yfs_per_ha, cal_type, bins, labels
     )
 
     fig, (ax2, ax3) = plt.subplots(
         2, 1, figsize=(8, 5), sharex=True, gridspec_kw={"height_ratios": [1, 1]}
     )
-
-    # bars1 = ax1.bar(
-    #     grouped_result.index,
-    #     grouped_result["total_farmers"],
-    #     color="#0072B2",
-    #     alpha=0.85,
-    # )
-    # ax1.set_ylabel("Gazdálkodók száma (db)", fontsize=12)
-    # ax1.yaxis.set_major_formatter(
-    #     FuncFormatter(lambda x, _: f"{int(x):,}".replace(",", " "))
-    # )
-    # add_bar_labels(ax1, bars1)
 
     bars2 = ax2.bar(
         grouped_result.index, grouped_result["total_area"], color="#56B4E9", alpha=0.85
@@ -1472,18 +1378,15 @@ def plot_support_summary_by_area_class(
         f"Támogatások alakulása gazdálkodói méretkategóriák szerint\n({cal_type})".replace(
             ".", ","
         ),
-        # fontsize=12,
         fontweight="bold",
-        # x=0.5,
-        # y=0.95,
     )
 
     ax2.grid(False)
     ax3.grid(False)
 
     fig.align_ylabels([ax2, ax3])
-    plt.subplots_adjust(left=0.12, hspace=0.2)
-    plt.savefig(f"output/abra_osszetett_{cal_type}.png", dpi=400)
+    fig.subplots_adjust(left=0.12, hspace=0.2)
+    fig.savefig(f"output/abra_osszetett_{cal_type}.png", dpi=300)
     plt.show()
 
 
@@ -1494,33 +1397,35 @@ def plot_avg_change_vs_farmer_count_by_area_class(
     bins: list[float],
     labels: list[str],
 ) -> None:
-    data_with_subs = compute_capped_subsidies(data, dabis_per_ha, 0, redist_per_ha)
-    data_with_subs["subs_cur"] = (
-        data_with_subs["subs_biss"] + data_with_subs["subs_redist"]
+    grouped_result = calc_support_summary_by_area_class(
+        data,
+        dabis_per_ha,
+        redist_per_ha,
+        0.0,
+        "all",
+        bins,
+        labels,
+        include_yfs_in_current=False,
     )
-
-    grouped_result = analyze_by_area_categories(
-        data_with_subs, bins=bins, labels=labels
-    )
-    _, ax = plt.subplots(figsize=(9, 5))
+    fig, ax1 = plt.subplots(figsize=(9, 5))
 
     # Oszlopdiagram
-    bars = ax.bar(
+    bars = ax1.bar(
         grouped_result.index,
         grouped_result["total_farmers"],
         alpha=0.6,
         color="steelblue",
     )
-    ax.set_ylabel("Gazdálkodók száma (db)", color="blue")
-    ax.tick_params(axis="y", labelcolor="blue")
-    ax.yaxis.set_major_formatter(
+    ax1.set_ylabel("Gazdálkodók száma (db)", color="blue")
+    ax1.tick_params(axis="y", labelcolor="blue")
+    ax1.yaxis.set_major_formatter(
         FuncFormatter(lambda x, _: f"{int(x):,}".replace(",", " "))
     )
 
     # Oszlop feliratok
     for bar in bars:
         height = bar.get_height()
-        ax.annotate(
+        ax1.annotate(
             f"{int(height):,}".replace(",", " "),
             xy=(bar.get_x() + bar.get_width() / 2, height),
             xytext=(0, 0),
@@ -1531,16 +1436,16 @@ def plot_avg_change_vs_farmer_count_by_area_class(
             color="blue",
         )
 
-    ax = ax.twinx()
-    ax.plot(
+    ax2 = ax1.twinx()
+    ax2.plot(
         grouped_result.index,
         grouped_result["avg_change"],
         color="red",
         marker="o",
         linewidth=2,
     )
-    ax.set_ylabel("Átlagos változás (%)", color="red")
-    ax.tick_params(axis="y", labelcolor="red")
+    ax2.set_ylabel("Átlagos változás (%)", color="red")
+    ax2.tick_params(axis="y", labelcolor="red")
 
     y_values = grouped_result["avg_change"].values
     for i, (x, y) in enumerate(zip(grouped_result.index, y_values)):
@@ -1553,7 +1458,7 @@ def plot_avg_change_vs_farmer_count_by_area_class(
         else:
             offset_y = 15
 
-        ax.annotate(
+        ax2.annotate(
             f"{y:.1f}%",
             xy=(x, y),
             xytext=(0, offset_y),
@@ -1563,8 +1468,8 @@ def plot_avg_change_vs_farmer_count_by_area_class(
             color="red",
         )
 
-    plt.title("Átlagos változás és gazdálkodók száma területkategóriánként")
-    plt.tight_layout()
+    ax1.set_title("Átlagos változás és gazdálkodók száma területkategóriánként")
+    fig.tight_layout()
     plt.show()
 
 
@@ -1575,76 +1480,59 @@ def plot_total_capped_loss_by_area_class(
     bins: list[float],
     labels: list[str],
 ) -> None:
-    data_with_subs = compute_capped_subsidies(data, dabis_per_ha, 0, redist_per_ha)
-    data_with_subs["subs_cur"] = (
-        data_with_subs["subs_biss"] + data_with_subs["subs_redist"]
+    grouped_result = calc_support_summary_by_area_class(
+        data,
+        dabis_per_ha,
+        redist_per_ha,
+        0.0,
+        "all",
+        bins,
+        labels,
+        include_yfs_in_current=False,
     )
 
-    grouped_result = analyze_by_area_categories(
-        data_with_subs, bins=bins, labels=labels
-    )
+    charts = [
+        (
+            grouped_result["total_capped_loss"],
+            "Degresszió és plafon miatti elvonás területkategóriánként",
+            "Elvonás összege (EUR)",
+            "salmon",
+            True,
+        ),
+        (
+            grouped_result["avg_subs_per_ha_capped"],
+            "Átlagos fajlagos támogatás hektáronként degresszió és plafon után",
+            "Fajlagos támogatás (EUR/ha)",
+            "seagreen",
+            False,
+        ),
+        (
+            grouped_result["total_subs_capped"] - grouped_result["total_subs_cur"],
+            "Támogatás változása a jelenlegi és az új rendszer között",
+            "Új − jelenlegi támogatás (EUR)",
+            "royalblue",
+            True,
+        ),
+        (
+            grouped_result["avg_change"],
+            "Relatív támogatásváltozás a jelenlegihez képest (%)",
+            "Támogatásváltozás (%)",
+            "darkorange",
+            False,
+        ),
+    ]
 
-    plt.figure(figsize=(8, 5))
-    ax = grouped_result["total_capped_loss"].plot(
-        kind="bar", color="salmon", title="A capping összege területkategóriánként"
-    )
-    plt.ylabel("Megvágott összeg (EUR)", fontsize=11)
-    plt.xlabel("Területkategória (ha)", fontsize=11)
-    plt.xticks(rotation=0, fontsize=10)
-    plt.yticks(fontsize=10)
-    plt.grid(axis="y", linestyle="--", alpha=0.7)
-
-    ax.yaxis.set_major_formatter(
-        FuncFormatter(lambda x, _: f"{x:,.0f}".replace(",", " "))
-    )
-
-    plt.tight_layout()
-    plt.show()
-
-    plt.figure(figsize=(8, 5))
-    grouped_result["avg_subs_per_ha_capped"].plot(
-        kind="bar",
-        color="seagreen",
-        title="Átlagos fajlagos támogatás hektáronként capping után",
-    )
-    plt.ylabel("Fajlagos támogatás (EUR/ha)", fontsize=11)
-    plt.xlabel("Területkategória (ha)", fontsize=11)
-    plt.xticks(rotation=0, fontsize=10)
-    plt.yticks(fontsize=10)
-    plt.grid(axis="y", linestyle="--", alpha=0.7)
-    plt.tight_layout()
-    plt.show()
-
-    plt.figure(figsize=(8, 5))
-    ax = grouped_result["total_capped_loss"].plot(
-        kind="bar",
-        color="royalblue",
-        title="Támogatás változása a jelenlegi és az új (cappingelt) rendszer között",
-    )
-    plt.ylabel("Eltérés összege (EUR)", fontsize=11)
-    plt.xlabel("Területkategória (ha)", fontsize=11)
-    plt.xticks(rotation=0, fontsize=10)
-    plt.yticks(fontsize=10)
-    plt.grid(axis="y", linestyle="--", alpha=0.7)
-    ax.yaxis.set_major_formatter(
-        FuncFormatter(lambda x, _: f"{x:,.0f}".replace(",", " "))
-    )
-    plt.tight_layout()
-    plt.show()
-
-    plt.figure(figsize=(8, 5))
-    ax = grouped_result["avg_change"].plot(
-        kind="bar",
-        color="darkorange",
-        title="Relatív támogatásváltozás a jelenlegihez képest (%)",
-    )
-    plt.ylabel("Támogatásváltozás (%)", fontsize=11)
-    plt.xlabel("Területkategória (ha)", fontsize=11)
-    plt.xticks(rotation=0, fontsize=10)
-    plt.yticks(fontsize=10)
-    plt.grid(axis="y", linestyle="--", alpha=0.7)
-    plt.tight_layout()
-    plt.show()
+    for values, title, ylabel, color, format_euros in charts:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        values.plot.bar(ax=ax, color=color, title=title)
+        ax.set(xlabel="Területkategória (ha)", ylabel=ylabel)
+        ax.tick_params(axis="x", labelrotation=0, labelsize=10)
+        ax.tick_params(axis="y", labelsize=10)
+        ax.grid(axis="y", linestyle="--", alpha=0.7)
+        if format_euros:
+            ax.yaxis.set_major_formatter(formatter)
+        fig.tight_layout()
+        plt.show()
 
 
 def plot_avg_subsidy_per_ha_current_by_area_class(
@@ -1654,27 +1542,30 @@ def plot_avg_subsidy_per_ha_current_by_area_class(
     bins: list[float],
     labels: list[str],
 ) -> None:
-    data_with_subs = compute_capped_subsidies(data, dabis_per_ha, 0, redist_per_ha)
-    data_with_subs["subs_cur"] = (
-        data_with_subs["subs_biss"] + data_with_subs["subs_redist"]
+    grouped_result = calc_support_summary_by_area_class(
+        data,
+        dabis_per_ha,
+        redist_per_ha,
+        0.0,
+        "all",
+        bins,
+        labels,
+        include_yfs_in_current=False,
     )
 
-    grouped_result = analyze_by_area_categories(
-        data_with_subs, bins=bins, labels=labels
-    )
-
-    plt.figure(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(8, 5))
     grouped_result["avg_subs_per_ha_cur"].plot(
         kind="bar",
+        ax=ax,
         color="seagreen",
-        title="Átlagos fajlagos támogatás hektáronként capping után",
+        title="Jelenlegi átlagos fajlagos támogatás hektáronként",
     )
-    plt.ylabel("Fajlagos támogatás (EUR/ha)", fontsize=11)
-    plt.xlabel("Területkategória (ha)", fontsize=11)
-    plt.xticks(rotation=0, fontsize=10)
-    plt.yticks(fontsize=10)
-    plt.grid(axis="y", linestyle="--", alpha=0.7)
-    plt.tight_layout()
+    ax.set_ylabel("Fajlagos támogatás (EUR/ha)", fontsize=11)
+    ax.set_xlabel("Területkategória (ha)", fontsize=11)
+    ax.tick_params(axis="x", labelrotation=0, labelsize=10)
+    ax.tick_params(axis="y", labelsize=10)
+    ax.grid(axis="y", linestyle="--", alpha=0.7)
+    fig.tight_layout()
     plt.show()
 
 
@@ -1689,10 +1580,17 @@ def build_rate_area_matrix(
     results = []
 
     for rate in subsidy_rates:
-        df_subs = compute_capped_subsidies(data, rate, 0, redist_per_ha, policy)
-        df_subs["subs_cur"] = df_subs["subs_biss"] + df_subs["subs_redist"]
-
-        grouped = analyze_by_area_categories(df_subs, bins=bins, labels=labels)
+        grouped = calc_support_summary_by_area_class(
+            data,
+            rate,
+            redist_per_ha,
+            0.0,
+            "all",
+            bins,
+            labels,
+            policy,
+            include_yfs_in_current=False,
+        )
         for cat in grouped.index:
             results.append(
                 {
@@ -1707,10 +1605,10 @@ def build_rate_area_matrix(
     return result_df
 
 
+@plt.style.context("seaborn-v0_8-whitegrid")
 def plot_subsidy_rate_sweep_by_area_class(data: pd.DataFrame) -> None:
-    sns.set_theme(style="whitegrid")
 
-    _, axs = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+    fig, axs = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
 
     sns.lineplot(
         data=data,
@@ -1723,7 +1621,7 @@ def plot_subsidy_rate_sweep_by_area_class(data: pd.DataFrame) -> None:
         ax=axs[0],
     )
     axs[0].set_title(
-        "Support and Relative Change by Area Class across Support Levels",
+        "Támogatások és relatív változásuk üzemméret-kategóriánként",
         fontsize=14,
         weight="bold",
     )
@@ -1765,7 +1663,7 @@ def plot_subsidy_rate_sweep_by_area_class(data: pd.DataFrame) -> None:
         FuncFormatter(lambda x, _: f"{x:,.0f}".replace(",", " "))
     )
 
-    plt.tight_layout()
+    fig.tight_layout()
     plt.show()
 
 
@@ -1792,7 +1690,7 @@ def plot_subsidy_rate_sweep_overview(data: pd.DataFrame) -> None:
     ax.yaxis.set_major_formatter(
         FuncFormatter(lambda x, _: f"{x:,.0f}".replace(",", " "))
     )
-    plt.tight_layout()
+    fig.tight_layout()
 
     fig, ax = plt.subplots(figsize=(10, 6))
     for area_class in data["area_class"].unique():
@@ -1811,7 +1709,7 @@ def plot_subsidy_rate_sweep_overview(data: pd.DataFrame) -> None:
     ax.grid(True, linestyle="--", alpha=0.6)
     ax.legend(title="Területkategória", loc="upper right", fontsize=9)
     ax.yaxis.set_major_formatter(PercentFormatter())
-    plt.tight_layout()
+    fig.tight_layout()
 
     pivot_table = data.pivot(
         index="area_class", columns="subs_per_ha", values="perc_diff"
@@ -1837,7 +1735,7 @@ def plot_subsidy_rate_sweep_overview(data: pd.DataFrame) -> None:
     cbar = fig.colorbar(c, ax=ax, label="Támogatásváltozás (%)")
     cbar.formatter = PercentFormatter()
     cbar.update_ticks()
-    plt.tight_layout()
+    fig.tight_layout()
     plt.show()
 
 
@@ -1860,7 +1758,7 @@ def plot_perc_diff_heatmap_by_rate_and_area_class(data: pd.DataFrame) -> None:
 
     ax.set_title("Relatív támogatásváltozás (%) hőtérképe", fontsize=13, weight="bold")
     fig.colorbar(im, ax=ax, label="Támogatásváltozás (%)")
-    plt.tight_layout()
+    fig.tight_layout()
     plt.show()
 
 
@@ -1868,31 +1766,44 @@ def plot_yfs_distribution(data: pd.DataFrame, threshold: float) -> None:
     s = data["area_yfs_cur_eligible"]
     s = s[s > 0]
 
-    count_below = (s <= threshold).sum()
-    area_below = s[s <= threshold].sum()
+    if s.empty:
+        raise ValueError("No YFS-eligible farms.")
 
-    pct_count = 100 * count_below / len(s)
-    pct_area = 100 * area_below / s.sum()
+    below = s[s <= threshold]
+    pct_count = 100 * len(below) / len(s)
+    pct_area = 100 * below.sum() / s.sum()
 
-    plt.figure(figsize=(8, 5))
-    plt.hist(s, bins=20, color="skyblue", edgecolor="black")
-    plt.axvline(
-        133, color="red", linestyle="--", linewidth=2, label=f"{threshold} ha threshold"
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    ax.hist(s, bins=20, color="skyblue", edgecolor="black")
+
+    ax.axvline(
+        threshold,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label=f"{threshold:g} ha threshold",
     )
 
-    plt.text(
-        142,
-        plt.ylim()[1] * 0.8,
-        f"Below {threshold} ha:\n{pct_count:.1f}% of farms\n{pct_area:.1f}% of area",
+    ax.annotate(
+        f"Below {threshold:g} ha:\n{pct_count:.1f}% of farms\n{pct_area:.1f}% of area",
+        xy=(threshold, 0.8),
+        xycoords=ax.get_xaxis_transform(),
+        xytext=(8, 0),
+        textcoords="offset points",
         color="red",
         fontsize=10,
+        va="center",
     )
 
-    plt.xlabel("YFS-eligible area (ha)")
-    plt.ylabel("Number of farms")
-    plt.title("Distribution of YFS-eligible area")
-    plt.legend()
-    plt.tight_layout()
+    ax.set(
+        xlabel="YFS-eligible area (ha)",
+        ylabel="Number of farms",
+        title="Distribution of YFS-eligible area",
+    )
+    ax.legend()
+
+    fig.tight_layout()
     plt.show()
 
 
@@ -2037,10 +1948,33 @@ def plot_support_summary_by_area_class_01(
     ax3.set_xlabel("Méretkategória (ha)", fontsize=12)
 
     fig.align_ylabels([ax1, ax2, ax3])
-    plt.subplots_adjust(left=0.12, hspace=0.2)
-    plt.savefig(f"output/abra_osszetett_{allocation / 1e6:.1f}.png", dpi=300)
+    fig.subplots_adjust(left=0.12, hspace=0.2)
+    fig.savefig(f"output/abra_osszetett_{allocation / 1e6:.1f}.png", dpi=300)
     plt.show()
     return data_with_subs
+
+
+@plt.style.context("seaborn-v0_8-whitegrid")
+def _plot_cis_distribution(share: pd.Series, title: str, ylabel: str) -> None:
+    """Draw percentage shares by farm-size category."""
+    fig, ax = plt.subplots(figsize=(8, 5))
+    colors = plt.get_cmap("Blues")(np.linspace(0.2, 0.9, len(share)))
+
+    for i, (category, value) in enumerate(share.items()):
+        missing_area = category == "Nincs mezőgazdasági területe"
+        bars = ax.bar(
+            str(category),
+            value,
+            color="lightgrey" if missing_area else colors[i],
+            edgecolor="black",
+            hatch="//" if missing_area else None,
+        )
+        ax.bar_label(bars, fmt="%.1f%%", padding=3, fontsize=9, fontweight="bold")
+
+    ax.set(xlabel="Méretkategória", ylabel=ylabel, title=title)
+    ax.tick_params(axis="x", labelrotation=45)
+    fig.tight_layout()
+    plt.show()
 
 
 def plot_cis_claimant_distribution_by_area_class(
@@ -2062,49 +1996,11 @@ def plot_cis_claimant_distribution_by_area_class(
     mask = data[param] > 0
     share = data[mask].groupby("area_class", observed=False).size() / mask.sum() * 100
 
-    plt.style.use("seaborn-v0_8-whitegrid")
-
-    _, ax = plt.subplots(figsize=(8, 5))
-
-    colors = plt.cm.Blues(np.linspace(0.2, 0.9, len(share)))
-    bars = []
-    for i, (cat, v) in enumerate(zip(share.index, share.values)):
-        if cat == "Nincs mezőgazdasági területe":
-            bar = ax.bar(
-                cat,
-                v,
-                color="lightgrey",
-                edgecolor="black",
-                hatch="//",  # csíkozás
-            )
-        else:
-            bar = ax.bar(
-                cat,
-                v,
-                color=colors[i],
-                edgecolor="black",
-            )
-        bars.append(bar[0])
-
-    ax.set_ylabel("Üzemszám arány (%)")
-    ax.set_title(
-        f"{dict_param[param]} százalékos megoszlása\nbirtokméret kategóriák szerint"
+    _plot_cis_distribution(
+        share,
+        f"{dict_param[param]} százalékos megoszlása\nbirtokméret kategóriák szerint",
+        "Üzemszám arány (%)",
     )
-    plt.xticks(rotation=45)
-
-    for bar, v in zip(bars, share.values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height(),
-            f"{v:.1f}%",
-            ha="center",
-            va="bottom",
-            fontsize=9,
-            fontweight="bold",
-        )
-
-    plt.tight_layout()
-    plt.show()
 
 
 def plot_cis_quantity_distribution_by_area_class(
@@ -2127,49 +2023,11 @@ def plot_cis_quantity_distribution_by_area_class(
     total = data[param].sum()
     share = data.groupby("area_class", observed=False)[param].sum() / total * 100
 
-    plt.style.use("seaborn-v0_8-whitegrid")
-
-    _, ax = plt.subplots(figsize=(8, 5))
-
-    colors = plt.cm.Blues(np.linspace(0.2, 0.9, len(share)))
-    bars = []
-    for i, (cat, v) in enumerate(zip(share.index, share.values)):
-        if cat == "Nincs mezőgazdasági területe":
-            bar = ax.bar(
-                cat,
-                v,
-                color="lightgrey",
-                edgecolor="black",
-                hatch="//",  # csíkozás
-            )
-        else:
-            bar = ax.bar(
-                cat,
-                v,
-                color=colors[i],
-                edgecolor="black",
-            )
-        bars.append(bar[0])
-
-    ax.set_ylabel("Arány (%)")
-    ax.set_title(
-        f"{dict_param[param]} százalékos megoszlása\nbirtokméret kategóriák szerint"
+    _plot_cis_distribution(
+        share,
+        f"{dict_param[param]} százalékos megoszlása\nbirtokméret kategóriák szerint",
+        "Arány (%)",
     )
-    plt.xticks(rotation=45)
-
-    for bar, v in zip(bars, share.values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height(),
-            f"{v:.1f}%",
-            ha="center",
-            va="bottom",
-            fontsize=9,
-            fontweight="bold",
-        )
-
-    plt.tight_layout()
-    plt.show()
 
 
 def plot_support_comparison_by_area_class(
